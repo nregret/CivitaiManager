@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import {
+    API,
     ASSET_KINDS,
     CIVITAI_CATEGORY_FILTERS,
     DETAIL_PREVIEW_LIMIT,
@@ -317,7 +318,12 @@ async function hydrateInitialData() {
     if (state.activeTab === "Discover" && state.searchItems.length === 0 && !state.loadingSearch) {
         tasks.push(search(true, { silent: true }));
     }
-    await Promise.allSettled(tasks);
+    const results = await Promise.allSettled(tasks);
+    results.forEach((result) => {
+        if (result.status === "rejected") {
+            console.error("[Civitai Manager] Initial data task failed:", result.reason);
+        }
+    });
 }
 
 function startPolling() {
