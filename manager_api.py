@@ -54,6 +54,7 @@ WORKFLOW_EXTENSIONS = {".json"}
 REMOTE_IMAGE_CACHE_WIDTH_DEFAULT = 450
 REMOTE_IMAGE_COMMON_WIDTHS = (96, 320, 450, 512, 800, 1200, 1600, 2200)
 CIVITAI_IMAGE_HOSTS = {"image.civitai.com", "imagecache.civitai.com", "image-b2.civitai.com"}
+CIVITAI_IMAGE_LOCATION = "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA"
 CIVITAI_MEDIA_ID_RE = re.compile(
     r"(?:^|/)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:/|$)",
     re.IGNORECASE,
@@ -1933,8 +1934,8 @@ def _civitai_media_cache_url(source_url: str, width: int) -> str:
     media_id = media_id_match.group(1).lower()
     snapped_width = _snap_remote_image_width(width)
     return (
-        "https://image-b2.civitai.com/file/civitai-media-cache/"
-        f"{media_id}/{snapped_width}x%3Cauto%3E_so"
+        f"{CIVITAI_IMAGE_LOCATION}/{media_id}/"
+        f"width={snapped_width},optimized=true/{media_id}.jpeg"
     )
 
 

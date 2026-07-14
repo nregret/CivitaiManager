@@ -93,8 +93,9 @@ class RemoteImageVariantTests(unittest.TestCase):
         )
         self.assertEqual(
             manager._civitai_media_cache_url(source, 450),
-            "https://image-b2.civitai.com/file/civitai-media-cache/"
-            "04a43bd2-a6f2-493f-ba86-c677fe642f00/450x%3Cauto%3E_so",
+            "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/"
+            "04a43bd2-a6f2-493f-ba86-c677fe642f00/width=450,optimized=true/"
+            "04a43bd2-a6f2-493f-ba86-c677fe642f00.jpeg",
         )
 
     def test_width_snaps_to_official_common_size(self):
@@ -102,7 +103,7 @@ class RemoteImageVariantTests(unittest.TestCase):
             "https://image-b2.civitai.com/file/civitai-media-cache/"
             "04a43bd2-a6f2-493f-ba86-c677fe642f00/original"
         )
-        self.assertTrue(manager._civitai_media_cache_url(source, 700).endswith("/800x%3Cauto%3E_so"))
+        self.assertIn("/width=800,optimized=true/", manager._civitai_media_cache_url(source, 700))
 
     def test_non_civitai_and_video_urls_are_not_rewritten(self):
         external = "https://example.com/image.jpg"

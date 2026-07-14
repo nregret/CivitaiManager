@@ -1749,7 +1749,7 @@ function renderModelDetail(model) {
     return `
         <div class="cmgr-detail-scroll">
             <button class="cmgr-detail-close" data-action="close-detail" title="${escapeAttr(t("Close detail"))}">×</button>
-            ${renderDetailPreview(modelPreviewItems(model, version, 700), model.name, state.detailPreviewIndex)}
+            ${renderDetailPreview(modelPreviewItems(model, version, 700, { diskCache: false }), model.name, state.detailPreviewIndex)}
             <div class="cmgr-detail-head">
                 <div>
                     <a class="cmgr-detail-title-link" href="${escapeAttr(modelUrl)}" target="_blank" rel="noopener noreferrer" title="Open on Civitai red">
@@ -2210,7 +2210,7 @@ function bindDiscoverEvents(root) {
             const preview = btn.closest(".cmgr-detail-preview");
             if (preview && state.selectedModel) {
                 preview.outerHTML = renderDetailPreview(
-                    modelPreviewItems(state.selectedModel, getSelectedVersion(), 700),
+                    modelPreviewItems(state.selectedModel, getSelectedVersion(), 700, { diskCache: false }),
                     state.selectedModel.name,
                     state.detailPreviewIndex,
                 );
@@ -2529,24 +2529,24 @@ function modelTagSummary(model) {
     return tags.slice(0, 2).join(", ");
 }
 
-function modelPreviewMedia(model, width = 450) {
+function modelPreviewMedia(model, width = 450, options = {}) {
     const versions = getVersions(model);
     for (const version of versions) {
         const images = Array.isArray(version.images) ? version.images : [];
         for (const image of images) {
-            const media = normalizePreviewMedia(image, width);
+            const media = normalizePreviewMedia(image, width, options);
             if (media.url) return media;
         }
     }
     const images = Array.isArray(model?.images) ? model.images : [];
     for (const image of images) {
-        const media = normalizePreviewMedia(image, width);
+        const media = normalizePreviewMedia(image, width, options);
         if (media.url) return media;
     }
     return { url: "", type: "image" };
 }
 
-function modelPreviewItems(model, version = getSelectedVersion(), width = 700) {
+function modelPreviewItems(model, version = getSelectedVersion(), width = 700, options = {}) {
     const seen = new Set();
     const addImages = (images, items) => {
         if (!Array.isArray(images)) return;
@@ -2556,7 +2556,7 @@ function modelPreviewItems(model, version = getSelectedVersion(), width = 700) {
         ];
         for (const image of ordered) {
             if (items.length >= DETAIL_PREVIEW_LIMIT) break;
-            const media = normalizePreviewMedia(image, width);
+            const media = normalizePreviewMedia(image, width, options);
             if (!media.url || seen.has(media.url)) continue;
             seen.add(media.url);
             items.push(media);
@@ -2564,7 +2564,7 @@ function modelPreviewItems(model, version = getSelectedVersion(), width = 700) {
     };
     const items = [];
     addImages(version?.images, items);
-    return items.length ? items : [modelPreviewMedia(model, width)];
+    return items.length ? items : [modelPreviewMedia(model, width, options)];
 }
 
 function isPreviewVideo(image) {
@@ -2577,19 +2577,27 @@ function modelPreviewUrl(model, width = 450) {
     return modelPreviewMedia(model, width).url;
 }
 
-function normalizePreviewMedia(image, width) {
+function normalizePreviewMedia(image, width, options = {}) {
     const rawUrl = typeof image === "string" ? image : image?.url || image?.videoUrl || image?.thumbnailUrl || "";
     if (!rawUrl) return { url: "", type: "image" };
     const mediaType = String(image?.type || image?.mimeType || image?.contentType || "").toLowerCase();
     const isVideo = mediaType.includes("video") || looksLikeVideoUrl(rawUrl);
     if (isVideo) {
         return {
-            url: `${API}/image?url=${encodeURIComponent(rawUrl)}&width=${width}`,
+            url: options.diskCache === false ? rawUrl : `${API}/image?url=${encodeURIComponent(rawUrl)}&width=${width}`,
             rawUrl,
             type: "video",
         };
     }
     const optimizedUrl = optimizeCivitaiImage(rawUrl, width);
+    if (options.diskCache === false) {
+        return {
+            url: optimizedUrl,
+            fallbackUrl: optimizedUrl === rawUrl ? "" : rawUrl,
+            rawUrl,
+            type: "image",
+        };
+    }
     return {
         url: `${API}/image?url=${encodeURIComponent(optimizedUrl)}&width=${width}`,
         fallbackUrl: optimizedUrl === rawUrl ? "" : `${API}/image?url=${encodeURIComponent(rawUrl)}&width=${width}`,
@@ -2619,7 +2627,8 @@ function optimizeCivitaiImage(url, width) {
     const commonWidths = [96, 320, 450, 512, 800, 1200, 1600, 2200];
     const requestedWidth = Math.max(1, Number(width) || 450);
     const snappedWidth = commonWidths.find((value) => requestedWidth <= value) || requestedWidth;
-    return `https://image-b2.civitai.com/file/civitai-media-cache/${mediaId.toLowerCase()}/${snappedWidth}x%3Cauto%3E_so`;
+    const normalizedId = mediaId.toLowerCase();
+    return `https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/${normalizedId}/width=${snappedWidth},optimized=true/${normalizedId}.jpeg`;
 }
 
 function renderMedia(media, alt, options = {}) {
