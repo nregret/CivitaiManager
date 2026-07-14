@@ -1,0 +1,1952 @@
+"""Backend API for the Civitai Manager ComfyUI extension."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import mimetypes
+import os
+import queue
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from typing import Any
+
+import folder_paths
+from aiohttp import web
+from server import PromptServer
+
+
+API_PREFIX = "/civitai-manager/api"
+CIVITAI_API_BASE = "https://civitai.red/api/v1"
+USER_AGENT = "ComfyUI-Civitai-Manager/1.0"
+MODEL_EXTENSIONS = {".ckpt", ".pt", ".pt2", ".bin", ".pth", ".safetensors", ".pkl", ".sft"}
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
+WORKFLOW_EXTENSIONS = {".json"}
+REMOTE_IMAGE_CACHE_WIDTH_DEFAULT = 450
+TAXONOMY_CACHE_TTL = 10 * 60
+SEARCH_FALLBACK_CURSOR_PREFIX = "fallback:"
+SEARCH_FALLBACK_MAX_PAGES = 8
+RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
+DOWNLOAD_MAX_WORKERS = 3
+DOWNLOAD_MAX_ACTIVE_JOBS = 20
+DOWNLOAD_JOB_HISTORY_LIMIT = 100
+DOWNLOAD_JOB_RETENTION_SECONDS = 24 * 60 * 60
+
+_CONFIG_CACHE: dict[str, Any] | None = None
+_DOWNLOAD_JOBS: dict[str, dict[str, Any]] = {}
+_DOWNLOAD_LOCK = threading.Lock()
+_DOWNLOAD_QUEUE: queue.Queue[tuple[str, str, str, str, dict[str, Any], str]] = queue.Queue(
+    maxsize=DOWNLOAD_MAX_ACTIVE_JOBS
+)
+_DOWNLOAD_WORKERS_LOCK = threading.Lock()
+_DOWNLOAD_WORKERS_STARTED = False
+_HASH_METADATA_LOCK = threading.Lock()
+_HASH_METADATA_REQUEST_LOCK = asyncio.Lock()
+_TAXONOMY_CACHE: dict[str, dict[str, Any]] = {}
+_TAXONOMY_LOCK = threading.Lock()
+
+
+def _install_windows_proactor_shutdown_guard() -> None:
+    """Suppress noisy Windows asyncio cleanup errors for already-closed pipes.
+
+    Python's Proactor event loop can log an exception from
+    _ProactorBasePipeTransport._call_connection_lost when the browser closes an
+    HTTP connection while a response is being cleaned up. The connection is
+    already gone, so this is not actionable for the plugin or user.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import asyncio.proactor_events as proactor_events
+
+        transport_cls = getattr(proactor_events, "_ProactorBasePipeTransport", None)
+        original = getattr(transport_cls, "_call_connection_lost", None)
+        if not transport_cls or not original or getattr(original, "_civitai_manager_guarded", False):
+            return
+
+        def guarded_call_connection_lost(self, exc):  # type: ignore[no-untyped-def]
+            try:
+                return original(self, exc)
+            except OSError:
+                return None
+
+        guarded_call_connection_lost._civitai_manager_guarded = True  # type: ignore[attr-defined]
+        transport_cls._call_connection_lost = guarded_call_connection_lost
+    except Exception:
+        return
+
+
+_install_windows_proactor_shutdown_guard()
+
+
+def _now() -> int:
+    return int(time.time())
+
+
+def _plugin_data_dir() -> str:
+    path = os.path.join(folder_paths.get_user_directory(), "civitai_manager")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _config_path() -> str:
+    return os.path.join(_plugin_data_dir(), "config.json")
+
+
+def _default_workflow_dir() -> str:
+    return os.path.join(folder_paths.get_user_directory(), "default", "workflows")
+
+
+def _default_config() -> dict[str, Any]:
+    return {
+        "civitai_api_key": "",
+        "allow_nsfw": False,
+        "workflow_dir": _default_workflow_dir(),
+        "save_metadata": True,
+        "save_preview": True,
+    }
+
+
+def load_config() -> dict[str, Any]:
+    global _CONFIG_CACHE
+    if _CONFIG_CACHE is not None:
+        return dict(_CONFIG_CACHE)
+
+    config = _default_config()
+    path = _config_path()
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            if isinstance(data, dict):
+                config.update(data)
+        except Exception as exc:
+            print(f"[Civitai Manager] Failed to read config: {exc}")
+
+    _CONFIG_CACHE = config
+    return dict(config)
+
+
+def save_config(data: dict[str, Any]) -> dict[str, Any]:
+    global _CONFIG_CACHE
+    current = load_config()
+    writable = {
+        "civitai_api_key",
+        "allow_nsfw",
+        "workflow_dir",
+        "save_metadata",
+        "save_preview",
+    }
+    for key in writable:
+        if key in data:
+            current[key] = data[key]
+
+    current["allow_nsfw"] = bool(current.get("allow_nsfw"))
+    current["save_metadata"] = bool(current.get("save_metadata", True))
+    current["save_preview"] = bool(current.get("save_preview", True))
+    current["civitai_api_key"] = str(current.get("civitai_api_key") or "").strip()
+    current["workflow_dir"] = str(current.get("workflow_dir") or "").strip() or _default_workflow_dir()
+
+    path = _config_path()
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(current, handle, indent=2, ensure_ascii=False)
+    os.replace(tmp_path, path)
+    _CONFIG_CACHE = current
+    with _TAXONOMY_LOCK:
+        _TAXONOMY_CACHE.clear()
+    return dict(current)
+
+
+def _public_config(config: dict[str, Any]) -> dict[str, Any]:
+    public = dict(config)
+    public["civitai_api_key"] = ""
+    public["api_key_set"] = bool(config.get("civitai_api_key"))
+    public["roots"] = _root_display()
+    return public
+
+
+def _request_headers(api_key: str | None = None, json_content: bool = True) -> dict[str, str]:
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json" if json_content else "*/*",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def _http_error_message(body: str, fallback: str) -> str:
+    if body:
+        try:
+            data = json.loads(body)
+            if isinstance(data, dict):
+                for key in ("error", "message", "detail"):
+                    value = data.get(key)
+                    if value:
+                        return str(value)
+        except Exception:
+            pass
+    return fallback
+
+
+def _read_json_url(url: str, api_key: str | None = None, timeout: int = 30, quiet: bool = False) -> dict[str, Any] | None:
+    req = urllib.request.Request(url, headers=_request_headers(api_key), method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            if not raw.strip():
+                return {"error": "Empty response from Civitai"}
+            return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"[Civitai Manager] Invalid JSON for {url}: {exc}")
+        return {"error": "Invalid JSON response from Civitai"}
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            pass
+        message = _http_error_message(body, f"HTTP {exc.code}: {exc.reason}")
+        if not quiet:
+            print(f"[Civitai Manager] HTTP {exc.code} for {url}: {body or exc.reason}")
+        return {
+            "error": message,
+            "status": exc.code,
+            "body": body,
+            "retryable": exc.code in RETRYABLE_HTTP_STATUS,
+        }
+    except Exception as exc:
+        if not quiet:
+            print(f"[Civitai Manager] Request failed for {url}: {exc}")
+        return {"error": str(exc)}
+
+
+def _is_retryable_result(result: dict[str, Any] | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    status = result.get("status")
+    return bool(result.get("retryable")) or status in RETRYABLE_HTTP_STATUS
+
+
+def _is_invalid_cursor_result(result: dict[str, Any] | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if result.get("status") != 400:
+        return False
+    text = f"{result.get('error') or ''} {result.get('body') or ''}".lower()
+    return "invalid cursor" in text
+
+
+def _read_json_url_with_retries(
+    url: str,
+    api_key: str | None = None,
+    timeout: int = 30,
+    retries: int = 2,
+    quiet: bool = False,
+) -> dict[str, Any] | None:
+    last_result: dict[str, Any] | None = None
+    for attempt in range(max(0, retries) + 1):
+        last_result = _read_json_url(url, api_key, timeout, quiet=quiet or attempt < retries)
+        if not _is_retryable_result(last_result):
+            return last_result
+        if attempt < retries:
+            time.sleep(0.45 * (attempt + 1))
+    return last_result
+
+
+def _safe_segment(value: Any, fallback: str = "Other", max_len: int = 80) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", text)
+    text = re.sub(r"\s+", " ", text).strip(" ._")
+    if not text:
+        text = fallback
+    return text[:max_len].strip(" ._") or fallback
+
+
+def _safe_filename(value: Any, fallback: str, extension: str = ".safetensors") -> str:
+    text = _safe_segment(value, fallback=fallback, max_len=160)
+    root, ext = os.path.splitext(text)
+    if not ext:
+        text = f"{text}{extension}"
+    return text
+
+
+def _safe_join(root: str, *parts: str) -> str:
+    root_abs = os.path.abspath(root)
+    path_abs = os.path.abspath(os.path.join(root_abs, *parts))
+    if os.path.commonpath([root_abs, path_abs]) != root_abs:
+        raise ValueError("Resolved path escapes allowed root")
+    return path_abs
+
+
+def _first_folder_path(folder_name: str, fallback: str) -> str:
+    try:
+        paths = folder_paths.get_folder_paths(folder_name)
+        if paths:
+            return paths[0]
+    except Exception:
+        pass
+    return fallback
+
+
+def _root_for_kind(root_kind: str) -> str:
+    root_kind = str(root_kind or "").lower()
+    if root_kind == "loras":
+        return _first_folder_path("loras", os.path.join(folder_paths.models_dir, "loras"))
+    if root_kind == "checkpoints":
+        return _first_folder_path("checkpoints", os.path.join(folder_paths.models_dir, "checkpoints"))
+    if root_kind == "unet":
+        return _first_folder_path("diffusion_models", os.path.join(folder_paths.models_dir, "unet"))
+    if root_kind == "workflows":
+        return str(load_config().get("workflow_dir") or _default_workflow_dir())
+    raise ValueError(f"Unknown asset root: {root_kind}")
+
+
+def _root_display() -> dict[str, str]:
+    return {
+        "loras": _root_for_kind("loras"),
+        "checkpoints": _root_for_kind("checkpoints"),
+        "unet": _root_for_kind("unet"),
+        "workflows": _root_for_kind("workflows"),
+    }
+
+
+def _category_name(model: dict[str, Any]) -> str:
+    category = model.get("category")
+    if isinstance(category, dict):
+        return _safe_segment(category.get("name"), "Other")
+    if isinstance(category, str):
+        return _safe_segment(category, "Other")
+    for key in ("modelCategory", "categoryName"):
+        if model.get(key):
+            return _safe_segment(model.get(key), "Other")
+    tags = model.get("tags")
+    if isinstance(tags, list):
+        for tag in tags:
+            clean = _safe_segment(tag, "")
+            if clean:
+                return clean
+    return "Other"
+
+
+def _kind_to_civitai_type(kind: str) -> str:
+    kind = str(kind or "").lower()
+    if kind == "checkpoint":
+        return "Checkpoint"
+    if kind == "workflow":
+        return "Workflows"
+    return "LORA"
+
+
+def _normalize_asset_kind(kind: str) -> str:
+    kind = str(kind or "").lower()
+    if kind in {"checkpoint", "workflow", "lora"}:
+        return kind
+    return "lora"
+
+
+def _api_key_cache_part(api_key: str | None) -> str:
+    if not api_key:
+        return "public"
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
+
+
+def _taxonomy_cache_key(kind: str, config: dict[str, Any]) -> str:
+    api_key = str(config.get("civitai_api_key") or "").strip() or None
+    return "|".join((
+        "taxonomy-enums-v1",
+        _normalize_asset_kind(kind),
+        "nsfw" if config.get("allow_nsfw") else "sfw",
+        _api_key_cache_part(api_key),
+    ))
+
+
+def _empty_taxonomy(kind: str, warning: str = "") -> dict[str, Any]:
+    data = {
+        "kind": _normalize_asset_kind(kind),
+        "categories": [],
+        "baseModels": [],
+        "modelTypes": [],
+        "tags": [],
+        "updated_at": _now(),
+    }
+    if warning:
+        data["warning"] = warning
+    return data
+
+
+def _model_base_models(model: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    raw_models = model.get("baseModels")
+    if isinstance(raw_models, list):
+        values.extend(str(item) for item in raw_models if item)
+    for key in ("baseModel", "baseModelType"):
+        if model.get(key):
+            values.append(str(model.get(key)))
+    versions = model.get("modelVersions")
+    if isinstance(versions, list):
+        for version in versions:
+            if not isinstance(version, dict):
+                continue
+            for key in ("baseModel", "baseModelType"):
+                if version.get(key):
+                    values.append(str(version.get(key)))
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        name = _safe_segment(value, "")
+        key = name.lower()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(name)
+    return cleaned or ["Other"]
+
+
+def _model_tags(model: dict[str, Any]) -> list[str]:
+    raw_tags = model.get("tags")
+    if not isinstance(raw_tags, list):
+        return []
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in raw_tags:
+        name = _safe_segment(value, "")
+        key = name.lower()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(name)
+    return cleaned
+
+
+def _taxonomy_from_items(kind: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    categories: dict[str, int] = {}
+    base_models: dict[str, int] = {}
+    model_types: dict[str, int] = {}
+    tags: dict[str, int] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        category = _category_name(item)
+        categories[category] = categories.get(category, 0) + 1
+        model_type = _model_type(item) or _kind_to_civitai_type(kind)
+        model_types[model_type] = model_types.get(model_type, 0) + 1
+        for base in _model_base_models(item):
+            base_models[base] = base_models.get(base, 0) + 1
+        for tag in _model_tags(item):
+            tags[tag] = tags.get(tag, 0) + 1
+
+    def to_list(values: dict[str, int]) -> list[dict[str, Any]]:
+        return [
+            {"name": name, "count": count}
+            for name, count in sorted(values.items(), key=lambda entry: (-entry[1], entry[0].lower()))
+        ]
+
+    return {
+        "kind": _normalize_asset_kind(kind),
+        "categories": to_list(categories),
+        "baseModels": to_list(base_models),
+        "modelTypes": to_list(model_types),
+        "tags": to_list(tags),
+        "updated_at": _now(),
+    }
+
+
+def _taxonomy_from_tags(kind: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    def safe_count(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    tags: dict[str, int] = {}
+    for item in items:
+        if isinstance(item, dict):
+            name = _safe_segment(item.get("name") or item.get("tag"), "")
+            count = safe_count(item.get("modelCount") or item.get("count") or item.get("models") or 0)
+        else:
+            name = _safe_segment(item, "")
+            count = 0
+        if not name:
+            continue
+        tags[name] = max(tags.get(name, 0), count)
+    return {
+        "kind": _normalize_asset_kind(kind),
+        "categories": [],
+        "baseModels": [],
+        "modelTypes": [],
+        "tags": [
+            {"name": name, "count": count}
+            for name, count in sorted(tags.items(), key=lambda entry: (-entry[1], entry[0].lower()))
+        ],
+        "updated_at": _now(),
+    }
+
+
+def _taxonomy_from_base_models(kind: str, values: list[Any]) -> dict[str, Any]:
+    base_models: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for value in values:
+        name = _safe_segment(value, "")
+        key = name.lower()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        base_models.append({"name": name, "count": 0})
+    return {
+        "kind": _normalize_asset_kind(kind),
+        "categories": [],
+        "baseModels": base_models,
+        "modelTypes": [],
+        "tags": [],
+        "updated_at": _now(),
+    }
+
+
+def _merge_taxonomy(current: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(current or {})
+    merged["kind"] = update.get("kind") or merged.get("kind") or "lora"
+    merged["updated_at"] = _now()
+    for key in ("categories", "baseModels", "modelTypes", "tags"):
+        counts: dict[str, int] = {}
+        for source in (merged.get(key), update.get(key)):
+            if isinstance(source, list):
+                for item in source:
+                    if not isinstance(item, dict):
+                        continue
+                    name = _safe_segment(item.get("name"), "Other")
+                    counts[name] = max(counts.get(name, 0), int(item.get("count") or 0))
+        merged[key] = [
+            {"name": name, "count": count}
+            for name, count in sorted(counts.items(), key=lambda entry: (-entry[1], entry[0].lower()))
+        ]
+    return merged
+
+
+def _merge_taxonomy_cache(kind: str, config: dict[str, Any], items: list[dict[str, Any]]) -> dict[str, Any]:
+    update = _taxonomy_from_items(kind, items)
+    key = _taxonomy_cache_key(kind, config)
+    with _TAXONOMY_LOCK:
+        cached = _TAXONOMY_CACHE.get(key)
+        current = cached.get("data") if isinstance(cached, dict) and isinstance(cached.get("data"), dict) else _empty_taxonomy(kind)
+        merged = _merge_taxonomy(current, update)
+        _TAXONOMY_CACHE[key] = {"timestamp": _now(), "data": merged}
+    return merged
+
+
+def _set_taxonomy_cache(kind: str, config: dict[str, Any], items: list[dict[str, Any]]) -> dict[str, Any]:
+    data = _taxonomy_from_items(kind, items)
+    return _set_taxonomy_cache_data(kind, config, data)
+
+
+def _set_taxonomy_cache_data(kind: str, config: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+    key = _taxonomy_cache_key(kind, config)
+    normalized = _merge_taxonomy(_empty_taxonomy(kind), data)
+    with _TAXONOMY_LOCK:
+        _TAXONOMY_CACHE[key] = {"timestamp": _now(), "data": normalized}
+    return normalized
+
+
+def _taxonomy_cache_get(kind: str, config: dict[str, Any]) -> dict[str, Any] | None:
+    key = _taxonomy_cache_key(kind, config)
+    with _TAXONOMY_LOCK:
+        cached = _TAXONOMY_CACHE.get(key)
+        if cached and _now() - int(cached.get("timestamp") or 0) < TAXONOMY_CACHE_TTL:
+            data = cached.get("data")
+            return dict(data) if isinstance(data, dict) else None
+    return None
+
+
+def _models_url(params: dict[str, Any]) -> str:
+    return f"{CIVITAI_API_BASE}/models?{urllib.parse.urlencode(params)}"
+
+
+def _cursor_offset_to_page(cursor: str, limit: int) -> str:
+    try:
+        offset = max(0, int(str(cursor).strip()))
+        page_size = max(1, int(limit or 40))
+        return str((offset // page_size) + 1)
+    except Exception:
+        return ""
+
+
+def _model_params_with_page_cursor(params: dict[str, Any]) -> dict[str, Any]:
+    cursor = str(params.get("cursor") or "").strip()
+    if not cursor.isdigit():
+        return dict(params)
+    next_params = dict(params)
+    next_params.pop("cursor", None)
+    next_params["page"] = _cursor_offset_to_page(cursor, int(str(params.get("limit") or "40")))
+    return next_params
+
+
+def _should_prefer_page_cursor(params: dict[str, Any]) -> bool:
+    cursor = str(params.get("cursor") or "").strip()
+    if not cursor.isdigit():
+        return False
+    return bool(params.get("tag") or params.get("category") or params.get("baseModels"))
+
+
+def _normalize_page_cursor_metadata(result: dict[str, Any] | None, params: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(result, dict) or result.get("error"):
+        return result
+    metadata = result.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    if metadata.get("nextCursor"):
+        return result
+    page = str(params.get("page") or "").strip()
+    if not page.isdigit():
+        return result
+    items = result.get("items") if isinstance(result.get("items"), list) else []
+    limit = max(1, int(str(params.get("limit") or "40")))
+    current_page = int(page)
+    total_pages = metadata.get("totalPages")
+    has_more = len(items) >= limit
+    if isinstance(total_pages, int):
+        has_more = current_page < total_pages
+    elif isinstance(total_pages, str) and total_pages.isdigit():
+        has_more = current_page < int(total_pages)
+    if has_more:
+        next_result = dict(result)
+        next_metadata = dict(metadata)
+        next_metadata["nextCursor"] = str(current_page * limit)
+        next_result["metadata"] = next_metadata
+        return next_result
+    return result
+
+
+def _read_models_json(params: dict[str, Any], api_key: str | None, timeout: int = 30) -> dict[str, Any] | None:
+    request_params = _model_params_with_page_cursor(params) if _should_prefer_page_cursor(params) else dict(params)
+    result = _read_json_url_with_retries(_models_url(request_params), api_key, timeout, retries=2, quiet=True)
+    if _is_invalid_cursor_result(result):
+        fallback_params = _model_params_with_page_cursor(params)
+        if fallback_params != params:
+            result = _read_json_url_with_retries(_models_url(fallback_params), api_key, timeout, retries=1, quiet=True)
+            return _normalize_page_cursor_metadata(result, fallback_params)
+    return _normalize_page_cursor_metadata(result, request_params)
+
+
+def _tags_url(params: dict[str, Any]) -> str:
+    return f"{CIVITAI_API_BASE}/tags?{urllib.parse.urlencode(params)}"
+
+
+def _enums_url() -> str:
+    return f"{CIVITAI_API_BASE}/enums"
+
+
+def _build_model_query_params(
+    kind: str,
+    query: str = "",
+    cursor: str = "",
+    sort: str = "Highest Rated",
+    limit: int = 40,
+    config: dict[str, Any] | None = None,
+    category: str = "",
+    tag: str = "",
+    base_model: str = "",
+    period: str = "AllTime",
+) -> dict[str, str]:
+    config = config or load_config()
+    params = {
+        "limit": str(limit),
+        "types": _kind_to_civitai_type(kind),
+        "sort": str(sort or "Highest Rated"),
+        "period": str(period or "AllTime"),
+        "nsfw": "true" if config.get("allow_nsfw") else "false",
+        "primaryFileOnly": "true",
+    }
+    if query.strip():
+        params["query"] = query.strip()
+    if cursor.strip():
+        params["cursor"] = cursor.strip()
+    if category.strip():
+        params["category"] = category.strip()
+    if tag.strip():
+        params["tag"] = tag.strip()
+    if base_model.strip():
+        params["baseModels"] = base_model.strip()
+    return params
+
+
+def _category_matches(model: dict[str, Any], category: str) -> bool:
+    clean = _safe_segment(category, "").lower()
+    if not clean:
+        return True
+    return _category_name(model).lower() == clean
+
+
+def _tag_matches(model: dict[str, Any], tag: str) -> bool:
+    clean = _safe_segment(tag, "").lower()
+    if not clean:
+        return True
+    return any(item.lower() == clean for item in _model_tags(model))
+
+
+def _base_model_matches(model: dict[str, Any], base_model: str) -> bool:
+    clean = _safe_segment(base_model, "").lower()
+    if not clean:
+        return True
+    return any(item.lower() == clean for item in _model_base_models(model))
+
+
+def _search_text_values(model: dict[str, Any]) -> list[str]:
+    values: list[str] = [
+        model.get("name"),
+        model.get("description"),
+        model.get("type"),
+    ]
+    creator = model.get("creator")
+    if isinstance(creator, dict):
+        values.append(creator.get("username"))
+    tags = model.get("tags")
+    if isinstance(tags, list):
+        values.extend(str(tag) for tag in tags if tag)
+    versions = model.get("modelVersions")
+    if isinstance(versions, list):
+        for version in versions:
+            if not isinstance(version, dict):
+                continue
+            values.extend([
+                version.get("name"),
+                version.get("baseModel"),
+                version.get("description"),
+            ])
+            trained_words = version.get("trainedWords")
+            if isinstance(trained_words, list):
+                values.extend(str(word) for word in trained_words if word)
+            files = version.get("files")
+            if isinstance(files, list):
+                values.extend(str(file.get("name")) for file in files if isinstance(file, dict) and file.get("name"))
+    return [str(value) for value in values if value]
+
+
+def _model_text_matches(model: dict[str, Any], *queries: str) -> bool:
+    tokens: list[str] = []
+    for query in queries:
+        clean = re.sub(r"<[^>]+>", " ", str(query or "").lower())
+        tokens.extend(token for token in re.split(r"\s+", clean) if token)
+    if not tokens:
+        return True
+    haystack = " ".join(_search_text_values(model)).lower()
+    haystack = re.sub(r"<[^>]+>", " ", haystack)
+    return all(token in haystack for token in tokens)
+
+
+def _version_base_model(version: dict[str, Any], model: dict[str, Any]) -> str:
+    for value in (
+        version.get("baseModel"),
+        version.get("baseModelType"),
+        model.get("baseModel"),
+        model.get("baseModelType"),
+    ):
+        if value:
+            return _safe_segment(value, "Other")
+    return "Other"
+
+
+def _model_type(model: dict[str, Any]) -> str:
+    return str(model.get("type") or model.get("modelType") or "").strip()
+
+
+def _is_workflow(model: dict[str, Any], requested_kind: str = "") -> bool:
+    model_type = _model_type(model).lower()
+    requested_kind = requested_kind.lower()
+    return requested_kind == "workflow" or "workflow" in model_type
+
+
+def _is_lora(model: dict[str, Any], requested_kind: str = "") -> bool:
+    model_type = _model_type(model).lower()
+    requested_kind = requested_kind.lower()
+    return requested_kind == "lora" or model_type in {"lora", "locon", "lycoris"} or "lora" in model_type
+
+
+def _is_unet_model(model: dict[str, Any], version: dict[str, Any], file_info: dict[str, Any]) -> bool:
+    candidates = [
+        model.get("type"),
+        model.get("name"),
+        model.get("description"),
+        version.get("name"),
+        version.get("baseModel"),
+        version.get("description"),
+        file_info.get("name"),
+        file_info.get("type"),
+        file_info.get("format"),
+        file_info.get("pickleScanResult"),
+    ]
+    metadata = file_info.get("metadata")
+    if isinstance(metadata, dict):
+        candidates.extend(str(value) for value in metadata.values() if value is not None)
+    haystack = " ".join(str(item or "") for item in candidates).lower()
+    explicit_tokens = (
+        "unet",
+        "diffusion model",
+        "diffusion_models",
+        "diffusion-model",
+        "dit model",
+        "transformer model",
+    )
+    return any(token in haystack for token in explicit_tokens)
+
+
+def _root_kind_for(model: dict[str, Any], version: dict[str, Any], file_info: dict[str, Any], requested_kind: str = "") -> str:
+    if _is_workflow(model, requested_kind):
+        return "workflows"
+    if _is_lora(model, requested_kind):
+        return "loras"
+    if _is_unet_model(model, version, file_info):
+        return "unet"
+    return "checkpoints"
+
+
+def _file_extension_for(root_kind: str, file_info: dict[str, Any]) -> str:
+    name = str(file_info.get("name") or "")
+    ext = os.path.splitext(name)[1].lower()
+    if root_kind == "workflows":
+        return ".json"
+    if ext in MODEL_EXTENSIONS:
+        return ext
+    return ".safetensors"
+
+
+def _filename_for(model: dict[str, Any], version: dict[str, Any], file_info: dict[str, Any], root_kind: str) -> str:
+    ext = _file_extension_for(root_kind, file_info)
+    if file_info.get("name"):
+        return _safe_filename(file_info["name"], "civitai_asset", ext)
+    base = " - ".join(part for part in (model.get("name"), version.get("name")) if part)
+    return _safe_filename(base, f"civitai_{model.get('id') or version.get('id') or _now()}", ext)
+
+
+def _download_url_for(version: dict[str, Any], file_info: dict[str, Any]) -> str:
+    for key in ("downloadUrl", "download_url", "url"):
+        value = file_info.get(key)
+        if isinstance(value, str) and value.startswith(("http://", "https://")):
+            return value
+    version_id = version.get("id")
+    if version_id:
+        return f"{CIVITAI_API_BASE}/download/models/{version_id}"
+    return ""
+
+
+def resolve_download_path(
+    model: dict[str, Any],
+    version: dict[str, Any],
+    file_info: dict[str, Any],
+    requested_kind: str = "",
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    overrides = overrides or {}
+    root_kind = _safe_segment(overrides.get("root_kind") or _root_kind_for(model, version, file_info, requested_kind), "checkpoints").lower()
+    if root_kind not in {"checkpoints", "unet", "loras", "workflows"}:
+        root_kind = "checkpoints"
+
+    base_model_dir = _safe_segment(overrides.get("base_model_dir") or _version_base_model(version, model), "Other")
+    category_dir = _safe_segment(overrides.get("category_dir") or _category_name(model), "Other")
+    filename = _safe_filename(overrides.get("filename") or _filename_for(model, version, file_info, root_kind), "civitai_asset", _file_extension_for(root_kind, file_info))
+
+    root_dir = _root_for_kind(root_kind)
+    if root_kind == "workflows":
+        relative_path = os.path.join(category_dir, filename)
+    else:
+        relative_path = os.path.join(base_model_dir, category_dir, filename)
+    absolute_path = _safe_join(root_dir, relative_path)
+
+    return {
+        "root_kind": root_kind,
+        "root_dir": root_dir,
+        "base_model_dir": "" if root_kind == "workflows" else base_model_dir,
+        "category_dir": category_dir,
+        "filename": filename,
+        "relative_path": relative_path.replace("\\", "/"),
+        "absolute_path": absolute_path,
+        "download_url": _download_url_for(version, file_info),
+    }
+
+
+def _unique_path(path: str) -> str:
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    index = 1
+    while True:
+        candidate = f"{base} ({index}){ext}"
+        if not os.path.exists(candidate):
+            return candidate
+        index += 1
+
+
+def _companion_metadata_path(asset_path: str, root_kind: str) -> str:
+    base, ext = os.path.splitext(asset_path)
+    if root_kind == "workflows" and ext.lower() == ".json":
+        return f"{base}.civitai.json"
+    return f"{base}.json"
+
+
+def _companion_preview_path(asset_path: str, image_url: str) -> str:
+    ext = ".png"
+    lowered = image_url.lower()
+    if ".jpg" in lowered or ".jpeg" in lowered:
+        ext = ".jpg"
+    elif ".webp" in lowered:
+        ext = ".webp"
+    return os.path.splitext(asset_path)[0] + ext
+
+
+def _metadata_payload(model: dict[str, Any], version: dict[str, Any], file_info: dict[str, Any], resolution: dict[str, Any]) -> dict[str, Any]:
+    creator = model.get("creator") if isinstance(model.get("creator"), dict) else {}
+    file_hashes = file_info.get("hashes") if isinstance(file_info.get("hashes"), dict) else {}
+    return {
+        "source": "civitai",
+        "downloaded_at": _now(),
+        "model_id": model.get("id"),
+        "version_id": version.get("id"),
+        "type": model.get("type"),
+        "name": model.get("name"),
+        "version_name": version.get("name"),
+        "creator": creator.get("username") or model.get("username") or "",
+        "category": _category_name(model),
+        "base_model": _version_base_model(version, model),
+        "trained_words": version.get("trainedWords") if isinstance(version.get("trainedWords"), list) else [],
+        "tags": model.get("tags") if isinstance(model.get("tags"), list) else [],
+        "hashes": file_hashes,
+        "resolution": {
+            "root_kind": resolution.get("root_kind"),
+            "base_model_dir": resolution.get("base_model_dir"),
+            "category_dir": resolution.get("category_dir"),
+            "filename": resolution.get("filename"),
+            "relative_path": resolution.get("relative_path"),
+        },
+        "model": model,
+        "version": version,
+        "file": file_info,
+    }
+
+
+def _first_preview_url(version: dict[str, Any], model: dict[str, Any]) -> str:
+    for images in (version.get("images"), model.get("images")):
+        if isinstance(images, list):
+            for image in images:
+                if isinstance(image, dict) and image.get("url"):
+                    return str(image["url"])
+                if isinstance(image, str):
+                    return image
+    return ""
+
+
+def _append_api_key_to_download(url: str, api_key: str | None) -> str:
+    if not api_key:
+        return url
+    parsed = urllib.parse.urlparse(url)
+    if "civitai" not in parsed.netloc.lower():
+        return url
+    query = urllib.parse.parse_qs(parsed.query)
+    if "token" not in query:
+        query["token"] = [api_key]
+    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query, doseq=True)))
+
+
+def _validate_civitai_https(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return False
+    host = parsed.netloc.lower()
+    return parsed.scheme == "https" and (
+        host == "civitai.com"
+        or host == "www.civitai.com"
+        or host == "civitai.red"
+        or host.endswith(".civitai.red")
+        or host.endswith(".civitai.com")
+    )
+
+
+def _download_job_finished_at(job: dict[str, Any]) -> int:
+    return int(job.get("completed_at") or job.get("failed_at") or job.get("created_at") or 0)
+
+
+def _prune_download_jobs_locked(now: int | None = None) -> None:
+    """Prune finished download history. Caller must hold _DOWNLOAD_LOCK."""
+    current_time = _now() if now is None else int(now)
+    finished = [
+        (task_id, job)
+        for task_id, job in _DOWNLOAD_JOBS.items()
+        if job.get("status") in {"completed", "failed"}
+    ]
+
+    for task_id, job in finished:
+        finished_at = _download_job_finished_at(job)
+        if finished_at and current_time - finished_at > DOWNLOAD_JOB_RETENTION_SECONDS:
+            _DOWNLOAD_JOBS.pop(task_id, None)
+
+    retained = sorted(
+        (
+            (task_id, job)
+            for task_id, job in _DOWNLOAD_JOBS.items()
+            if job.get("status") in {"completed", "failed"}
+        ),
+        key=lambda item: _download_job_finished_at(item[1]),
+        reverse=True,
+    )
+    for task_id, _ in retained[DOWNLOAD_JOB_HISTORY_LIMIT:]:
+        _DOWNLOAD_JOBS.pop(task_id, None)
+
+
+def _active_download_job_count_locked() -> int:
+    """Count queued and running jobs. Caller must hold _DOWNLOAD_LOCK."""
+    return sum(
+        1
+        for job in _DOWNLOAD_JOBS.values()
+        if job.get("status") in {"pending", "downloading"}
+    )
+
+
+def _download_queue_worker() -> None:
+    while True:
+        task = _DOWNLOAD_QUEUE.get()
+        try:
+            _download_worker(*task)
+        finally:
+            _DOWNLOAD_QUEUE.task_done()
+
+
+def _ensure_download_workers() -> None:
+    global _DOWNLOAD_WORKERS_STARTED
+    if _DOWNLOAD_WORKERS_STARTED:
+        return
+    with _DOWNLOAD_WORKERS_LOCK:
+        if _DOWNLOAD_WORKERS_STARTED:
+            return
+        for index in range(DOWNLOAD_MAX_WORKERS):
+            worker = threading.Thread(
+                target=_download_queue_worker,
+                name=f"civitai-manager-download-{index + 1}",
+                daemon=True,
+            )
+            worker.start()
+        _DOWNLOAD_WORKERS_STARTED = True
+
+
+def _download_worker(
+    task_id: str,
+    download_url: str,
+    target_path: str,
+    root_kind: str,
+    metadata: dict[str, Any],
+    preview_url: str,
+) -> None:
+    temp_path = f"{target_path}.download"
+    config = load_config()
+    api_key = str(config.get("civitai_api_key") or "").strip() or None
+    request_url = _append_api_key_to_download(download_url, api_key)
+
+    try:
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        req = urllib.request.Request(request_url, headers=_request_headers(api_key, json_content=False))
+        with urllib.request.urlopen(req, timeout=60) as resp, open(temp_path, "wb") as handle:
+            total = int(resp.headers.get("Content-Length") or 0)
+            with _DOWNLOAD_LOCK:
+                _DOWNLOAD_JOBS[task_id]["status"] = "downloading"
+                _DOWNLOAD_JOBS[task_id]["total"] = total
+            progress = 0
+            while True:
+                chunk = resp.read(1024 * 1024)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                progress += len(chunk)
+                with _DOWNLOAD_LOCK:
+                    _DOWNLOAD_JOBS[task_id]["progress"] = progress
+
+        final_path = _unique_path(target_path)
+        os.replace(temp_path, final_path)
+        metadata["saved_path"] = final_path
+        metadata["saved_filename"] = os.path.basename(final_path)
+
+        if config.get("save_metadata", True):
+            metadata_path = _companion_metadata_path(final_path, root_kind)
+            with open(metadata_path, "w", encoding="utf-8") as handle:
+                json.dump(metadata, handle, indent=2, ensure_ascii=False)
+
+        if config.get("save_preview", True) and preview_url:
+            try:
+                preview_path = _companion_preview_path(final_path, preview_url)
+                _download_binary(preview_url, preview_path, api_key=None, timeout=30)
+            except Exception as exc:
+                print(f"[Civitai Manager] Preview download failed: {exc}")
+
+        with _DOWNLOAD_LOCK:
+            job = _DOWNLOAD_JOBS[task_id]
+            job["status"] = "completed"
+            job["progress"] = job.get("total") or job.get("progress") or os.path.getsize(final_path)
+            job["target_path"] = final_path
+            job["relative_path"] = os.path.relpath(final_path, _root_for_kind(root_kind)).replace("\\", "/")
+            job["completed_at"] = _now()
+    except urllib.error.HTTPError as exc:
+        error = f"HTTP {exc.code}: {exc.reason}"
+        if exc.code in (401, 403):
+            error = "Civitai refused the download. Configure a valid API Key in Settings."
+        with _DOWNLOAD_LOCK:
+            _DOWNLOAD_JOBS[task_id]["status"] = "failed"
+            _DOWNLOAD_JOBS[task_id]["error"] = error
+            _DOWNLOAD_JOBS[task_id]["failed_at"] = _now()
+    except Exception as exc:
+        with _DOWNLOAD_LOCK:
+            _DOWNLOAD_JOBS[task_id]["status"] = "failed"
+            _DOWNLOAD_JOBS[task_id]["error"] = str(exc)
+            _DOWNLOAD_JOBS[task_id]["failed_at"] = _now()
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+
+def _download_binary(url: str, target_path: str, api_key: str | None = None, timeout: int = 30) -> None:
+    req = urllib.request.Request(url, headers=_request_headers(api_key, json_content=False))
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        with open(target_path, "wb") as handle:
+            shutil.copyfileobj(resp, handle)
+
+
+def _scan_roots() -> dict[str, Any]:
+    return {
+        "roots": _root_display(),
+        "items": _scan_all_library_items(),
+        "generated_at": _now(),
+    }
+
+
+def _metadata_for_asset(abs_path: str, root_kind: str) -> tuple[str, dict[str, Any]]:
+    path = _companion_metadata_path(abs_path, root_kind)
+    if not os.path.isfile(path):
+        return "missing", {}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return "cached", data if isinstance(data, dict) else {}
+    except Exception:
+        return "invalid", {}
+
+
+def _write_asset_metadata(abs_path: str, root_kind: str, metadata: dict[str, Any]) -> None:
+    path = _companion_metadata_path(abs_path, root_kind)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2, ensure_ascii=False)
+
+
+def _preview_for_asset(abs_path: str) -> str:
+    base = os.path.splitext(abs_path)[0]
+    for ext in IMAGE_EXTENSIONS:
+        candidate = base + ext
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
+def _scan_library_kind(root_kind: str) -> list[dict[str, Any]]:
+    root = _root_for_kind(root_kind)
+    extensions = WORKFLOW_EXTENSIONS if root_kind == "workflows" else MODEL_EXTENSIONS
+    if not os.path.isdir(root):
+        return []
+
+    items: list[dict[str, Any]] = []
+    for dirpath, _, filenames in os.walk(root):
+        for name in filenames:
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in extensions:
+                continue
+            if root_kind == "workflows" and name.endswith(".civitai.json"):
+                continue
+
+            abs_path = os.path.join(dirpath, name)
+            rel_path = os.path.relpath(abs_path, root).replace("\\", "/")
+            folder_path = os.path.dirname(rel_path).replace("\\", "/")
+            metadata_status, metadata = _metadata_for_asset(abs_path, root_kind)
+            preview_file = _preview_for_asset(abs_path)
+            rel_parts = rel_path.split("/")
+            inferred_base = rel_parts[0] if root_kind != "workflows" and len(rel_parts) > 2 else ""
+            inferred_category = rel_parts[1] if root_kind != "workflows" and len(rel_parts) > 2 else (rel_parts[0] if root_kind == "workflows" and len(rel_parts) > 1 else "Other")
+            resolution = metadata.get("resolution") if isinstance(metadata.get("resolution"), dict) else {}
+            hashes = metadata.get("hashes") if isinstance(metadata.get("hashes"), dict) else {}
+            try:
+                stat = os.stat(abs_path)
+            except OSError:
+                continue
+            items.append({
+                "id": f"{root_kind}:{rel_path}",
+                "root_kind": root_kind,
+                "name": metadata.get("name") or os.path.splitext(name)[0],
+                "version_name": metadata.get("version_name") or "",
+                "filename": name,
+                "relative_path": rel_path,
+                "folder_path": folder_path,
+                "absolute_path": abs_path,
+                "size": stat.st_size,
+                "mtime": int(stat.st_mtime),
+                "base_model": metadata.get("base_model") or resolution.get("base_model_dir") or inferred_base,
+                "category": metadata.get("category") or resolution.get("category_dir") or inferred_category,
+                "creator": metadata.get("creator") or "",
+                "model_id": metadata.get("model_id"),
+                "version_id": metadata.get("version_id"),
+                "trained_words": metadata.get("trained_words") if isinstance(metadata.get("trained_words"), list) else [],
+                "tags": metadata.get("tags") if isinstance(metadata.get("tags"), list) else [],
+                "hash": hashes.get("SHA256") or hashes.get("sha256") or metadata.get("sha256") or "",
+                "favorite": bool(metadata.get("favorite")),
+                "metadata_status": metadata_status,
+                "has_preview": bool(preview_file),
+                "thumb_url": f"{API_PREFIX}/local-preview?root_kind={urllib.parse.quote(root_kind)}&path={urllib.parse.quote(rel_path)}&v={int(stat.st_mtime)}",
+            })
+    return items
+
+
+def _scan_all_library_items() -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for root_kind in ("checkpoints", "unet", "loras", "workflows"):
+        items.extend(_scan_library_kind(root_kind))
+
+    by_hash: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        item_hash = str(item.get("hash") or "").lower()
+        if item_hash:
+            by_hash.setdefault(item_hash, []).append(item)
+    for group in by_hash.values():
+        if len(group) > 1:
+            for item in group:
+                item["duplicate_count"] = len(group)
+    return sorted(items, key=lambda item: (item["root_kind"], item["relative_path"].lower()))
+
+
+def _resolve_asset_path(root_kind: str, rel_path: str) -> str:
+    root_kind = str(root_kind or "").lower()
+    root = _root_for_kind(root_kind)
+    rel_path = str(rel_path or "").replace("\\", "/").lstrip("/")
+    return _safe_join(root, rel_path)
+
+
+def _move_companions(src_path: str, dst_path: str, root_kind: str) -> None:
+    companions = [
+        (_companion_metadata_path(src_path, root_kind), _companion_metadata_path(dst_path, root_kind)),
+    ]
+    for ext in IMAGE_EXTENSIONS:
+        companions.append((os.path.splitext(src_path)[0] + ext, os.path.splitext(dst_path)[0] + ext))
+    for src, dst in companions:
+        if os.path.isfile(src):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.move(src, dst)
+
+
+def _delete_companions(asset_path: str, root_kind: str) -> None:
+    for path in [_companion_metadata_path(asset_path, root_kind), *[os.path.splitext(asset_path)[0] + ext for ext in IMAGE_EXTENSIONS]]:
+        if os.path.isfile(path):
+            try:
+                os.remove(path)
+            except Exception as exc:
+                print(f"[Civitai Manager] Failed to delete companion {path}: {exc}")
+
+
+def _hash_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _metadata_from_hash(sha256: str) -> dict[str, Any] | None:
+    config = load_config()
+    api_key = str(config.get("civitai_api_key") or "").strip() or None
+    url = f"{CIVITAI_API_BASE}/model-versions/by-hash/{urllib.parse.quote(sha256)}"
+    data = _read_json_url(url, api_key=api_key, timeout=30)
+    if not data or data.get("error"):
+        return None
+    return data
+
+
+def _enrich_metadata_worker(abs_path: str, root_kind: str) -> dict[str, Any]:
+    """Hash and enrich one asset entirely off the asyncio event-loop thread."""
+    with _HASH_METADATA_LOCK:
+        sha256 = _hash_file(abs_path)
+        civitai_data = _metadata_from_hash(sha256)
+        existing_status, existing = _metadata_for_asset(abs_path, root_kind)
+        metadata = existing if existing_status in {"cached", "invalid"} else {}
+        metadata.update({
+            "source": metadata.get("source") or "local",
+            "sha256": sha256,
+            "hashes": {
+                **(metadata.get("hashes") if isinstance(metadata.get("hashes"), dict) else {}),
+                "SHA256": sha256.upper(),
+            },
+            "metadata_enriched_at": _now(),
+        })
+        if civitai_data:
+            model = civitai_data.get("model") if isinstance(civitai_data.get("model"), dict) else {}
+            metadata.update({
+                "source": "civitai",
+                "model_id": model.get("id") or metadata.get("model_id"),
+                "version_id": civitai_data.get("id") or metadata.get("version_id"),
+                "type": model.get("type") or metadata.get("type"),
+                "name": model.get("name") or metadata.get("name"),
+                "version_name": civitai_data.get("name") or metadata.get("version_name"),
+                "creator": (model.get("creator") or {}).get("username")
+                if isinstance(model.get("creator"), dict)
+                else metadata.get("creator", ""),
+                "category": _category_name(model) if model else metadata.get("category", "Other"),
+                "base_model": civitai_data.get("baseModel") or metadata.get("base_model"),
+                "trained_words": civitai_data.get("trainedWords")
+                if isinstance(civitai_data.get("trainedWords"), list)
+                else metadata.get("trained_words", []),
+                "model": model or metadata.get("model", {}),
+                "version": civitai_data,
+            })
+        _write_asset_metadata(abs_path, root_kind, metadata)
+        return {
+            "sha256": sha256,
+            "metadata": metadata,
+            "matched": bool(civitai_data),
+        }
+
+
+def _cache_dir(name: str) -> str:
+    path = os.path.join(_plugin_data_dir(), name)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _search_base_model_text_fallback(
+    kind: str,
+    query: str,
+    tag: str,
+    category: str,
+    base_model: str,
+    sort: str,
+    limit: int,
+    cursor: str,
+    config: dict[str, Any],
+    api_key: str | None,
+    existing_ids: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if limit <= 0:
+        return [], {}
+    existing_ids = existing_ids or set()
+    collected: list[dict[str, Any]] = []
+    metadata: dict[str, Any] = {}
+    current_cursor = cursor
+    pages = 0
+    while pages < SEARCH_FALLBACK_MAX_PAGES and len(collected) < limit:
+        params = _build_model_query_params(
+            kind,
+            query="",
+            cursor=current_cursor,
+            sort=sort,
+            limit=100,
+            config=config,
+            category="",
+            tag="",
+            base_model=base_model,
+        )
+        result = _read_models_json(params, api_key, 30)
+        if not result or (isinstance(result, dict) and result.get("error")):
+            break
+        page_items = result.get("items") if isinstance(result.get("items"), list) else []
+        page_items = [item for item in page_items if isinstance(item, dict)]
+        if page_items:
+            _merge_taxonomy_cache(kind, config, page_items)
+        for item in page_items:
+            item_id = str(item.get("id") or "")
+            if item_id in existing_ids:
+                continue
+            if not _base_model_matches(item, base_model):
+                continue
+            if not _model_text_matches(item, query, tag, category):
+                continue
+            existing_ids.add(item_id)
+            collected.append(item)
+            if len(collected) >= limit:
+                break
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        next_cursor = str(metadata.get("nextCursor") or "")
+        pages += 1
+        if not next_cursor:
+            metadata = {}
+            break
+        current_cursor = next_cursor
+    if current_cursor and metadata.get("nextCursor"):
+        metadata = dict(metadata)
+        metadata["nextCursor"] = f"{SEARCH_FALLBACK_CURSOR_PREFIX}{metadata['nextCursor']}"
+    return collected, metadata
+
+
+def _search_civitai_models(
+    kind: str,
+    query: str,
+    cursor: str,
+    sort: str,
+    limit: int,
+    tag: str,
+    base_model: str,
+    category: str,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    api_key = str(config.get("civitai_api_key") or "").strip() or None
+    category = _safe_segment(category, "") if category else ""
+    tag = _safe_segment(tag, "") if tag else ""
+    base_model = _safe_segment(base_model, "") if base_model else ""
+    if category.lower() == "other":
+        category = ""
+    api_tag = tag or category
+    collected: list[dict[str, Any]] = []
+    warning = ""
+    metadata: dict[str, Any] = {}
+    attempted: set[tuple[str, str, str]] = set()
+    fallback_cursor = ""
+    if cursor.startswith(SEARCH_FALLBACK_CURSOR_PREFIX):
+        fallback_cursor = cursor[len(SEARCH_FALLBACK_CURSOR_PREFIX):]
+        cursor = ""
+
+    def add_attempt(attempts: list[tuple[str, str, str]], attempt_query: str, attempt_tag: str, attempt_base: str) -> None:
+        key = (attempt_query.strip(), attempt_tag.strip(), attempt_base.strip())
+        if key in attempted:
+            return
+        attempted.add(key)
+        attempts.append(key)
+
+    attempts: list[tuple[str, str, str]] = []
+    if not fallback_cursor:
+        add_attempt(attempts, query, api_tag, base_model)
+        if not cursor and query and api_tag:
+            add_attempt(attempts, query, "", base_model)
+        if not cursor and query and not api_tag:
+            add_attempt(attempts, "", query, base_model)
+        if not cursor and query and api_tag:
+            add_attempt(attempts, "", api_tag, base_model)
+
+    for attempt_query, attempt_tag, attempt_base in attempts:
+        fetch_limit = 100 if base_model else limit
+        params = _build_model_query_params(
+            kind,
+            attempt_query,
+            cursor,
+            sort,
+            fetch_limit,
+            config,
+            "",
+            attempt_tag,
+            attempt_base,
+        )
+        result = _read_models_json(params, api_key, 30)
+        if not result:
+            warning = "Empty response from Civitai"
+            continue
+        if isinstance(result, dict) and result.get("error"):
+            warning = str(result.get("error") or "")
+            continue
+
+        page_items = result.get("items") if isinstance(result.get("items"), list) else []
+        page_items = [item for item in page_items if isinstance(item, dict)]
+        if page_items:
+            metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+            _merge_taxonomy_cache(kind, config, page_items)
+            if base_model:
+                page_items = [item for item in page_items if _base_model_matches(item, base_model)]
+            collected.extend(page_items)
+            warning = ""
+            if collected or not base_model:
+                break
+
+    should_fallback = base_model and (query or tag or category) and len(collected) < limit
+    if should_fallback:
+        existing_ids = {str(item.get("id")) for item in collected}
+        fallback_items, fallback_metadata = _search_base_model_text_fallback(
+            kind,
+            query,
+            tag,
+            category,
+            base_model,
+            sort,
+            limit - len(collected),
+            fallback_cursor,
+            config,
+            api_key,
+            existing_ids,
+        )
+        if fallback_items:
+            collected.extend(fallback_items)
+            metadata = fallback_metadata
+            warning = ""
+        elif fallback_metadata:
+            metadata = fallback_metadata
+
+    taxonomy = _taxonomy_cache_get(kind, config) or _empty_taxonomy(kind)
+    response = {
+        "items": collected[:limit],
+        "metadata": metadata or {},
+        "taxonomy": taxonomy,
+    }
+    if warning:
+        response["warning"] = warning
+    return response
+
+
+def _load_taxonomy(kind: str, config: dict[str, Any], force: bool = False) -> dict[str, Any]:
+    cached = None if force else _taxonomy_cache_get(kind, config)
+    if cached:
+        return cached
+
+    api_key = str(config.get("civitai_api_key") or "").strip() or None
+    params = _build_model_query_params(kind, sort="Highest Rated", limit=100, config=config)
+    result = _read_models_json(params, api_key, 30)
+    if not result or result.get("error"):
+        stale_key = _taxonomy_cache_key(kind, config)
+        with _TAXONOMY_LOCK:
+            stale = _TAXONOMY_CACHE.get(stale_key, {}).get("data")
+        taxonomy = dict(stale) if isinstance(stale, dict) else _empty_taxonomy(kind)
+        taxonomy["warning"] = result.get("error") if isinstance(result, dict) else "Failed to load taxonomy"
+    else:
+        items = result.get("items") if isinstance(result.get("items"), list) else []
+        items = [item for item in items if isinstance(item, dict)]
+        taxonomy = _taxonomy_from_items(kind, items)
+
+    enums_result = _read_json_url(_enums_url(), api_key, 30)
+    if isinstance(enums_result, dict) and not enums_result.get("error"):
+        base_models = enums_result.get("BaseModel")
+        if isinstance(base_models, list):
+            taxonomy = _merge_taxonomy(taxonomy, _taxonomy_from_base_models(kind, base_models))
+
+    tag_params = {"limit": "200"}
+    tag_result = _read_json_url(_tags_url(tag_params), api_key, 30)
+    if isinstance(tag_result, dict) and not tag_result.get("error"):
+        tag_items = tag_result.get("items") if isinstance(tag_result.get("items"), list) else []
+        taxonomy = _merge_taxonomy(taxonomy, _taxonomy_from_tags(kind, tag_items))
+    return _set_taxonomy_cache_data(kind, config, taxonomy)
+
+
+def _placeholder_svg(text: str = "No Preview") -> web.Response:
+    body = f"""<svg xmlns="http://www.w3.org/2000/svg" width="450" height="600" viewBox="0 0 450 600">
+<rect width="450" height="600" fill="#16181d"/>
+<rect x="24" y="24" width="402" height="552" rx="8" fill="#20242c" stroke="#3a404b"/>
+<text x="225" y="300" fill="#9aa3b2" font-family="Arial, sans-serif" font-size="24" text-anchor="middle">{text}</text>
+</svg>"""
+    return web.Response(body=body.encode("utf-8"), content_type="image/svg+xml", headers={"Cache-Control": "public, max-age=3600"})
+
+
+async def get_config_api(request: web.Request) -> web.Response:
+    config = load_config()
+    return web.json_response(_public_config(config))
+
+
+async def save_config_api(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            return web.json_response({"success": False, "error": "Config payload must be an object"}, status=400)
+        config = save_config(body)
+        return web.json_response({"success": True, "config": _public_config(config)})
+    except Exception as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=500)
+
+
+async def roots_api(request: web.Request) -> web.Response:
+    return web.json_response(_root_display())
+
+
+async def taxonomy_api(request: web.Request) -> web.Response:
+    try:
+        config = load_config()
+        kind = _normalize_asset_kind(request.query.get("kind", "lora"))
+        force = request.query.get("force", "").lower() in {"1", "true", "yes"}
+        data = await asyncio.to_thread(_load_taxonomy, kind, config, force)
+        return web.json_response(data)
+    except Exception as exc:
+        return web.json_response(_empty_taxonomy(request.query.get("kind", "lora"), str(exc)))
+
+
+async def search_api(request: web.Request) -> web.Response:
+    try:
+        config = load_config()
+        kind = _normalize_asset_kind(request.query.get("kind", "lora"))
+        query = request.query.get("query", "")
+        cursor = request.query.get("cursor", "")
+        sort = request.query.get("sort", "Highest Rated")
+        category = request.query.get("category", "")
+        tag = request.query.get("tag", "")
+        base_model = request.query.get("base_model") or request.query.get("baseModel") or request.query.get("baseModels") or ""
+        limit = max(1, min(int(request.query.get("limit", "40")), 100))
+        result = await asyncio.to_thread(
+            _search_civitai_models,
+            kind,
+            query,
+            cursor,
+            sort,
+            limit,
+            tag,
+            base_model,
+            category,
+            config,
+        )
+        return web.json_response(result)
+    except Exception as exc:
+        return web.json_response({"items": [], "metadata": {}, "error": str(exc)}, status=500)
+
+
+async def test_api_api(request: web.Request) -> web.Response:
+    try:
+        config = load_config()
+        api_key = str(config.get("civitai_api_key") or "").strip() or None
+        params = _build_model_query_params("lora", limit=1, config=config)
+        result = await asyncio.to_thread(_read_json_url, _models_url(params), api_key, 20)
+        if not result or result.get("error"):
+            return web.json_response({
+                "success": False,
+                "api_key_set": bool(api_key),
+                "error": result.get("error") if isinstance(result, dict) else "No response from Civitai red",
+            })
+        return web.json_response({
+            "success": True,
+            "api_key_set": bool(api_key),
+            "count": len(result.get("items") if isinstance(result.get("items"), list) else []),
+        })
+    except Exception as exc:
+        return web.json_response({"success": False, "error": str(exc), "api_key_set": bool(load_config().get("civitai_api_key"))})
+
+
+async def model_detail_api(request: web.Request) -> web.Response:
+    try:
+        model_id = str(request.query.get("id", "")).strip()
+        if not model_id:
+            return web.json_response({"success": False, "error": "Missing model id"}, status=400)
+        api_key = str(load_config().get("civitai_api_key") or "").strip() or None
+        url = f"{CIVITAI_API_BASE}/models/{urllib.parse.quote(model_id)}"
+        data = await asyncio.to_thread(_read_json_url, url, api_key, 30)
+        if not data or data.get("error"):
+            return web.json_response({"success": False, "error": data.get("error") if data else "Model not found"}, status=404)
+        return web.json_response({"success": True, "model": data})
+    except Exception as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=500)
+
+
+async def resolve_path_api(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+        model = body.get("model") if isinstance(body.get("model"), dict) else {}
+        version = body.get("version") if isinstance(body.get("version"), dict) else {}
+        file_info = body.get("file") if isinstance(body.get("file"), dict) else {}
+        requested_kind = str(body.get("kind") or "")
+        overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
+        resolution = resolve_download_path(model, version, file_info, requested_kind, overrides)
+        resolution["exists"] = os.path.exists(resolution["absolute_path"])
+        return web.json_response({"success": True, "resolution": resolution})
+    except Exception as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=500)
+
+
+async def download_api(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+        model = body.get("model") if isinstance(body.get("model"), dict) else {}
+        version = body.get("version") if isinstance(body.get("version"), dict) else {}
+        file_info = body.get("file") if isinstance(body.get("file"), dict) else {}
+        requested_kind = str(body.get("kind") or "")
+        overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
+        resolution = resolve_download_path(model, version, file_info, requested_kind, overrides)
+        download_url = str(body.get("download_url") or resolution.get("download_url") or "")
+        if not download_url or not _validate_civitai_https(download_url):
+            return web.json_response({"success": False, "error": "Only Civitai HTTPS downloads are supported"}, status=400)
+
+        _ensure_download_workers()
+        task_id = str(uuid.uuid4())
+        metadata = _metadata_payload(model, version, file_info, resolution)
+        preview_url = _first_preview_url(version, model)
+        with _DOWNLOAD_LOCK:
+            _prune_download_jobs_locked()
+            if _active_download_job_count_locked() >= DOWNLOAD_MAX_ACTIVE_JOBS:
+                return web.json_response({
+                    "success": False,
+                    "error": f"Download queue is full ({DOWNLOAD_MAX_ACTIVE_JOBS} active jobs)",
+                }, status=429)
+            _DOWNLOAD_JOBS[task_id] = {
+                "id": task_id,
+                "status": "pending",
+                "progress": 0,
+                "total": 0,
+                "error": "",
+                "root_kind": resolution["root_kind"],
+                "target_path": resolution["absolute_path"],
+                "relative_path": resolution["relative_path"],
+                "filename": resolution["filename"],
+                "created_at": _now(),
+            }
+        try:
+            _DOWNLOAD_QUEUE.put_nowait((
+                task_id,
+                download_url,
+                resolution["absolute_path"],
+                resolution["root_kind"],
+                metadata,
+                preview_url,
+            ))
+        except queue.Full:
+            with _DOWNLOAD_LOCK:
+                _DOWNLOAD_JOBS.pop(task_id, None)
+            return web.json_response({
+                "success": False,
+                "error": "Download queue is full",
+            }, status=429)
+        return web.json_response({"success": True, "task_id": task_id, "resolution": resolution})
+    except Exception as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=500)
+
+
+async def download_status_api(request: web.Request) -> web.Response:
+    task_id = request.query.get("task_id", "")
+    with _DOWNLOAD_LOCK:
+        _prune_download_jobs_locked()
+        if task_id:
+            job = _DOWNLOAD_JOBS.get(task_id)
+            return web.json_response(dict(job) if job else {"status": "not_found"})
+        return web.json_response({job_id: dict(job) for job_id, job in _DOWNLOAD_JOBS.items()})
+
+
+async def library_api(request: web.Request) -> web.Response:
+    try:
+        data = await asyncio.to_thread(_scan_roots)
+        return web.json_response(data)
+    except Exception as exc:
+        return web.json_response({"roots": _root_display(), "items": [], "error": str(exc)}, status=500)
+
+
+async def local_preview_api(request: web.Request) -> web.StreamResponse:
+    try:
+        root_kind = request.query.get("root_kind", "")
+        rel_path = request.query.get("path", "")
+        abs_path = _resolve_asset_path(root_kind, rel_path)
+        preview_file = _preview_for_asset(abs_path)
+        if preview_file and os.path.isfile(preview_file):
+            resp = web.FileResponse(preview_file)
+            resp.headers["Cache-Control"] = "public, max-age=86400"
+            return resp
+        return _placeholder_svg()
+    except Exception:
+        return _placeholder_svg()
+
+
+async def image_proxy_api(request: web.Request) -> web.StreamResponse:
+    source_url = request.query.get("url", "").strip()
+    if not source_url.startswith(("http://", "https://")):
+        return _placeholder_svg()
+    try:
+        width = max(80, min(int(request.query.get("width", str(REMOTE_IMAGE_CACHE_WIDTH_DEFAULT))), 1400))
+    except Exception:
+        width = REMOTE_IMAGE_CACHE_WIDTH_DEFAULT
+    cache_key = hashlib.sha256(f"{source_url}|{width}".encode("utf-8")).hexdigest()
+    cache_path = os.path.join(_cache_dir("remote_images"), cache_key)
+    meta_path = f"{cache_path}.json"
+    if os.path.isfile(cache_path):
+        content_type = "image/webp"
+        if os.path.isfile(meta_path):
+            try:
+                with open(meta_path, "r", encoding="utf-8") as handle:
+                    content_type = json.load(handle).get("content_type") or content_type
+            except Exception:
+                pass
+        return web.FileResponse(cache_path, headers={"Cache-Control": "public, max-age=31536000, immutable", "Content-Type": content_type})
+
+    def image_source_candidates(url: str) -> list[str]:
+        candidates = [url]
+        parsed = urllib.parse.urlparse(url)
+        query = urllib.parse.parse_qs(parsed.query)
+        if "width" in query:
+            query.pop("width", None)
+            stripped = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query, doseq=True)))
+            if stripped and stripped not in candidates:
+                candidates.append(stripped)
+        return candidates
+
+    def normalize_image_content_type(url: str, content_type: str | None, data: bytes) -> str:
+        clean = (content_type or "").split(";", 1)[0].strip().lower()
+        if clean.startswith("image/") or clean.startswith("video/"):
+            return clean
+        guessed = mimetypes.guess_type(url)[0]
+        if guessed:
+            return guessed
+        if data.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+            return "image/webp"
+        if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+            return "image/gif"
+        return "image/jpeg"
+
+    def fetch_image() -> tuple[bytes, str]:
+        last_error: Exception | None = None
+        for candidate in image_source_candidates(source_url):
+            try:
+                req = urllib.request.Request(candidate, headers=_request_headers(json_content=False))
+                with urllib.request.urlopen(req, timeout=25) as resp:
+                    data = resp.read()
+                    return data, normalize_image_content_type(candidate, resp.headers.get("Content-Type"), data)
+            except Exception as exc:
+                last_error = exc
+        if last_error:
+            raise last_error
+        raise RuntimeError("No image source candidates")
+
+    try:
+        data, content_type = await asyncio.to_thread(fetch_image)
+        with open(cache_path, "wb") as handle:
+            handle.write(data)
+        with open(meta_path, "w", encoding="utf-8") as handle:
+            json.dump({"content_type": content_type}, handle)
+        return web.Response(body=data, content_type=content_type, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+    except Exception as exc:
+        print(f"[Civitai Manager] Image proxy failed: {exc}")
+        return _placeholder_svg()
+
+
+async def delete_asset_api(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+        root_kind = str(body.get("root_kind") or "")
+        rel_path = str(body.get("relative_path") or "")
+        abs_path = _resolve_asset_path(root_kind, rel_path)
+        if not os.path.isfile(abs_path):
+            return web.json_response({"success": False, "error": "Asset not found"}, status=404)
+        os.remove(abs_path)
+        _delete_companions(abs_path, root_kind)
+        return web.json_response({"success": True})
+    except Exception as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=500)
+
+
+async def move_asset_api(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+        source_root_kind = str(body.get("root_kind") or "")
+        source_rel_path = str(body.get("relative_path") or "")
+        target_root_kind = str(body.get("target_root_kind") or source_root_kind).lower()
+        base_model_dir = _safe_segment(body.get("base_model_dir"), "Other")
+        category_dir = _safe_segment(body.get("category_dir"), "Other")
+        filename = _safe_filename(body.get("filename"), os.path.basename(source_rel_path), os.path.splitext(source_rel_path)[1] or ".safetensors")
+
+        src_path = _resolve_asset_path(source_root_kind, source_rel_path)
+        if not os.path.isfile(src_path):
+            return web.json_response({"success": False, "error": "Source asset not found"}, status=404)
+        target_root = _root_for_kind(target_root_kind)
+        if target_root_kind == "workflows":
+            dst_path = _safe_join(target_root, category_dir, filename)
+        else:
+            dst_path = _safe_join(target_root, base_model_dir, category_dir, filename)
+        if os.path.exists(dst_path):
+            return web.json_response({"success": False, "error": "Target already exists"}, status=409)
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        shutil.move(src_path, dst_path)
+        _move_companions(src_path, dst_path, source_root_kind)
+        return web.json_response({
+            "success": True,
+            "relative_path": os.path.relpath(dst_path, target_root).replace("\\", "/"),
+            "absolute_path": dst_path,
+            "root_kind": target_root_kind,
+        })
+    except Exception as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=500)
+
+
+async def favorite_asset_api(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+        root_kind = str(body.get("root_kind") or "")
+        rel_path = str(body.get("relative_path") or "")
+        favorite = bool(body.get("favorite"))
+        abs_path = _resolve_asset_path(root_kind, rel_path)
+        if not os.path.isfile(abs_path):
+            return web.json_response({"success": False, "error": "Asset not found"}, status=404)
+        status, metadata = _metadata_for_asset(abs_path, root_kind)
+        if status == "missing":
+            metadata = {
+                "source": "local",
+                "name": os.path.splitext(os.path.basename(abs_path))[0],
+                "resolution": {
+                    "root_kind": root_kind,
+                    "relative_path": rel_path,
+                },
+            }
+        metadata["favorite"] = favorite
+        metadata["favorite_updated_at"] = _now()
+        _write_asset_metadata(abs_path, root_kind, metadata)
+        return web.json_response({"success": True, "favorite": favorite})
+    except Exception as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=500)
+
+
+async def open_folder_api(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+        root_kind = str(body.get("root_kind") or "")
+        rel_path = str(body.get("relative_path") or "")
+        abs_path = _resolve_asset_path(root_kind, rel_path)
+        if not os.path.exists(abs_path):
+            return web.json_response({"success": False, "error": "Asset not found"}, status=404)
+        folder = os.path.dirname(abs_path)
+        if os.name == "nt":
+            os.startfile(folder)  # type: ignore[attr-defined]
+        elif sys_platform() == "darwin":
+            subprocess.Popen(["open", folder])
+        else:
+            subprocess.Popen(["xdg-open", folder])
+        return web.json_response({"success": True, "folder": folder})
+    except Exception as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=500)
+
+
+def sys_platform() -> str:
+    return sys.platform
+
+
+async def enrich_metadata_api(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+        root_kind = str(body.get("root_kind") or "")
+        rel_path = str(body.get("relative_path") or "")
+        abs_path = _resolve_asset_path(root_kind, rel_path)
+        if not os.path.isfile(abs_path):
+            return web.json_response({"success": False, "error": "Asset not found"}, status=404)
+        async with _HASH_METADATA_REQUEST_LOCK:
+            result = await asyncio.to_thread(_enrich_metadata_worker, abs_path, root_kind)
+        return web.json_response({"success": True, **result})
+    except Exception as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=500)
+
+
+routes = PromptServer.instance.routes
+routes.get(f"{API_PREFIX}/config")(get_config_api)
+routes.post(f"{API_PREFIX}/config")(save_config_api)
+routes.get(f"{API_PREFIX}/roots")(roots_api)
+routes.get(f"{API_PREFIX}/taxonomy")(taxonomy_api)
+routes.get(f"{API_PREFIX}/search")(search_api)
+routes.get(f"{API_PREFIX}/test-api")(test_api_api)
+routes.get(f"{API_PREFIX}/model-detail")(model_detail_api)
+routes.post(f"{API_PREFIX}/resolve-path")(resolve_path_api)
+routes.post(f"{API_PREFIX}/download")(download_api)
+routes.get(f"{API_PREFIX}/download-status")(download_status_api)
+routes.get(f"{API_PREFIX}/library")(library_api)
+routes.get(f"{API_PREFIX}/local-preview")(local_preview_api)
+routes.get(f"{API_PREFIX}/image")(image_proxy_api)
+routes.post(f"{API_PREFIX}/asset/delete")(delete_asset_api)
+routes.post(f"{API_PREFIX}/asset/move")(move_asset_api)
+routes.post(f"{API_PREFIX}/asset/favorite")(favorite_asset_api)
+routes.post(f"{API_PREFIX}/asset/open-folder")(open_folder_api)
+routes.post(f"{API_PREFIX}/asset/metadata")(enrich_metadata_api)

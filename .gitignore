@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.pyd
+
+.pytest_cache/
+.coverage
+htmlcov/
+
+node_modules/
+dist/
+build/
+
+.DS_Store
+Thumbs.db
