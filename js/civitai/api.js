@@ -6,8 +6,10 @@ import {
     SEARCH_CACHE_VERSION,
 } from "./constants.js";
 
-export async function apiGet(path) {
-    const response = await fetch(`${API}${path}`);
+export async function apiGet(path, options = {}) {
+    const response = await fetch(`${API}${path}`, {
+        signal: options.signal,
+    });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
         throw new Error(data.error || `Request failed: ${response.status}`);

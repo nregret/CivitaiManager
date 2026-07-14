@@ -22,6 +22,7 @@ let pollTimer = null;
 let toastTimer = null;
 let previewObserver = null;
 let searchRequestSeq = 0;
+let searchAbortController = null;
 let downloadsPollingFast = false;
 let themeObserver = null;
 let themeSyncQueued = false;
@@ -247,10 +248,10 @@ function syncThemeVariables() {
     const isLightTheme = panelLuminance !== null && panelLuminance >= 0.5;
     const readableTextColor = panelLuminance === null
         ? textColor
-        : (isLightTheme ? "#18181b" : "#ffffff");
+        : (isLightTheme ? "#18181b" : "#e4e4e7");
     const readableMutedColor = panelLuminance === null
         ? mutedColor
-        : (isLightTheme ? "#52525b" : "#dbe4f0");
+        : (isLightTheme ? "#52525b" : "#b8bec7");
 
     setRootVariable("--cmgr-sampled-panel-bg", panelBg);
     setRootVariable("--cmgr-sampled-card-bg", cardBg);
@@ -504,8 +505,11 @@ async function testApiConnection() {
 async function search(reset = true, options = {}) {
     const silent = options.silent === true;
     const forceRefresh = options.forceRefresh === true;
-    if (state.loadingSearch) return;
+    if (!reset && state.loadingSearch) return;
+    if (reset) cancelActiveSearch();
     const requestSeq = ++searchRequestSeq;
+    const abortController = new AbortController();
+    searchAbortController = abortController;
     state.loadingSearch = true;
     if (!silent) state.error = "";
     if (reset) {
@@ -533,7 +537,7 @@ async function search(reset = true, options = {}) {
         if (!reset && state.nextCursor) params.set("cursor", state.nextCursor);
         const requestPath = `/search?${params.toString()}`;
         const cached = forceRefresh ? null : getSearchCache(requestPath);
-        const data = cached || await apiGet(requestPath);
+        const data = cached || await apiGet(requestPath, { signal: abortController.signal });
         if (!cached) setSearchCache(requestPath, data);
         if (requestSeq !== searchRequestSeq) {
             return;
@@ -554,10 +558,17 @@ async function search(reset = true, options = {}) {
             return;
         }
     } catch (err) {
+        if (err?.name === "AbortError" || requestSeq !== searchRequestSeq) {
+            return;
+        }
         if (!silent) {
             state.error = err.message;
         } else {
             console.warn("[Civitai Manager] Initial search failed:", err);
+        }
+    } finally {
+        if (searchAbortController === abortController) {
+            searchAbortController = null;
         }
     }
     if (requestSeq !== searchRequestSeq) {
@@ -570,6 +581,14 @@ async function search(reset = true, options = {}) {
         pendingResponsiveSearch = false;
         scheduleResponsiveSearch(true);
     }
+}
+
+function cancelActiveSearch() {
+    searchRequestSeq++;
+    searchAbortController?.abort();
+    searchAbortController = null;
+    state.loadingSearch = false;
+    state.autoLoadingMore = false;
 }
 
 function currentSearchSignature() {
@@ -593,10 +612,6 @@ function scheduleResponsiveSearch(immediate = false) {
         if (state.activeTab !== "Discover") return;
         const signature = currentSearchSignature();
         if (signature === lastResponsiveSearchKey && !pendingResponsiveSearch) return;
-        if (state.loadingSearch) {
-            pendingResponsiveSearch = true;
-            return;
-        }
         pendingResponsiveSearch = false;
         lastResponsiveSearchKey = signature;
         search(true, { silent: true });
@@ -1550,9 +1565,7 @@ function selectTag(tag) {
 
 function selectAssetKind(kind) {
     if (!kind || state.assetKind === kind) return;
-    searchRequestSeq++;
-    state.loadingSearch = false;
-    state.autoLoadingMore = false;
+    cancelActiveSearch();
     state.assetKind = kind;
     state.selectedCategory = "";
     state.selectedCivitaiCategory = "";
@@ -2049,9 +2062,7 @@ function bindDiscoverEvents(root) {
     };
     const sortSelect = root.querySelector('[data-field="sort"]');
     if (sortSelect) sortSelect.onchange = () => {
-        searchRequestSeq++;
-        state.loadingSearch = false;
-        state.autoLoadingMore = false;
+        cancelActiveSearch();
         state.sort = sortSelect.value;
         search(true, { silent: true });
     };
