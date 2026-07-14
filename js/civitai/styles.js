@@ -1462,6 +1462,40 @@ export function injectStyles() {
             background: var(--cmgr-panel);
             border-color: var(--cmgr-border);
         }
+        .cmgr-library-toolbar-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-left: auto;
+        }
+        .cmgr-library-match-status {
+            flex: 1 0 100%;
+            display: grid;
+            grid-template-columns: minmax(140px, 240px) auto minmax(0, 1fr);
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+            color: var(--cmgr-muted);
+            font-size: 12px;
+        }
+        .cmgr-library-match-status > span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .cmgr-library-match-progress {
+            height: 7px;
+            overflow: hidden;
+            border-radius: 999px;
+            background: color-mix(in srgb, var(--cmgr-muted) 18%, transparent);
+        }
+        .cmgr-library-match-progress span {
+            display: block;
+            height: 100%;
+            border-radius: inherit;
+            background: var(--cmgr-good);
+            transition: width 0.2s ease;
+        }
         .cmgr-nav {
             border-right-color: var(--cmgr-border);
             gap: 12px;
@@ -2109,6 +2143,38 @@ export function injectStyles() {
         .cmgr-detail-head > div:last-child {
             min-width: 0;
         }
+        .cmgr-detail-match-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin: 0 0 14px;
+            padding: 12px;
+            border: 1px solid var(--cmgr-border);
+            border-radius: var(--cmgr-radius);
+            background: var(--cmgr-panel-soft);
+        }
+        .cmgr-detail-match-row.is-matched {
+            border-color: color-mix(in srgb, var(--cmgr-good) 42%, var(--cmgr-border));
+        }
+        .cmgr-detail-match-row > div {
+            min-width: 0;
+            display: grid;
+            gap: 3px;
+        }
+        .cmgr-detail-match-row b {
+            color: var(--cmgr-text);
+        }
+        .cmgr-detail-match-row span {
+            color: var(--cmgr-muted);
+            font-size: 12px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .cmgr-detail-match-row .cmgr-primary {
+            flex: 0 0 auto;
+        }
         .cmgr-detail-preview,
         .cmgr-path-box,
         .cmgr-settings-form,
@@ -2610,6 +2676,18 @@ export function injectStyles() {
             }
             .cmgr-toolbar {
                 padding: 12px 16px;
+            }
+            .cmgr-library-toolbar-actions {
+                width: 100%;
+                margin-left: 0;
+                flex-wrap: wrap;
+            }
+            .cmgr-library-match-status {
+                grid-template-columns: 1fr;
+            }
+            .cmgr-detail-match-row {
+                align-items: stretch;
+                flex-direction: column;
             }
             .cmgr-nav {
                 border-bottom-color: var(--cmgr-border);

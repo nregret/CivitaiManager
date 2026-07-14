@@ -34,6 +34,16 @@ let pendingResponsiveSearch = false;
 let lastResponsiveSearchKey = "";
 let comboOutsideBound = false;
 let lastDownloadNavCount = -1;
+let libraryMetadataBatch = {
+    running: false,
+    cancelRequested: false,
+    total: 0,
+    completed: 0,
+    matched: 0,
+    notFound: 0,
+    failed: 0,
+    current: "",
+};
 
 if (!window.__cmgrLoadedImageUrls) {
     window.__cmgrLoadedImageUrls = new Set();
@@ -921,12 +931,109 @@ async function enrichSelectedAsset() {
     try {
         showToast(t("Hashing asset..."));
         const data = await apiPost("/asset/metadata", assetLocationPayload(asset));
-        showToast(t(data.matched ? "Metadata matched from Civitai" : "SHA256 metadata saved"));
-        await loadLibrary();
+        showToast(t(data.matched ? "Civitai metadata and preview updated" : "No Civitai match found; SHA256 saved"));
+        await loadLibrary(true);
     } catch (err) {
         state.error = err.message;
         render();
     }
+}
+
+function assetNeedsCivitaiMetadata(asset) {
+    const wantsPreview = state.config?.save_preview !== false;
+    return !asset.model_id || (wantsPreview && !asset.has_preview);
+}
+
+function libraryMetadataBatchText() {
+    if (!libraryMetadataBatch.running && !libraryMetadataBatch.total) return "";
+    if (libraryMetadataBatch.cancelRequested && libraryMetadataBatch.running) {
+        return t("Stopping after current model...");
+    }
+    return t("Matching metadata {completed}/{total} · matched {matched} · not found {notFound} · failed {failed}", {
+        completed: libraryMetadataBatch.completed,
+        total: libraryMetadataBatch.total,
+        matched: libraryMetadataBatch.matched,
+        notFound: libraryMetadataBatch.notFound,
+        failed: libraryMetadataBatch.failed,
+    });
+}
+
+function renderLibraryMetadataBatchStatus() {
+    if (!libraryMetadataBatch.running && !libraryMetadataBatch.total) return "";
+    const pct = libraryMetadataBatch.total
+        ? Math.round((libraryMetadataBatch.completed / libraryMetadataBatch.total) * 100)
+        : 0;
+    return `
+        <div class="cmgr-library-match-status" data-library-match-status>
+            <div class="cmgr-library-match-progress"><span style="width:${pct}%"></span></div>
+            <b>${escapeHtml(libraryMetadataBatchText())}</b>
+            <span data-library-match-current>${escapeHtml(libraryMetadataBatch.current || "")}</span>
+        </div>
+    `;
+}
+
+function updateLibraryMetadataBatchStatus() {
+    const status = bodyEl?.querySelector("[data-library-match-status]");
+    if (!status) return;
+    const pct = libraryMetadataBatch.total
+        ? Math.round((libraryMetadataBatch.completed / libraryMetadataBatch.total) * 100)
+        : 0;
+    const progress = status.querySelector(".cmgr-library-match-progress span");
+    const label = status.querySelector("b");
+    const current = status.querySelector("[data-library-match-current]");
+    if (progress) progress.style.width = `${pct}%`;
+    if (label) label.textContent = libraryMetadataBatchText();
+    if (current) current.textContent = libraryMetadataBatch.current || "";
+}
+
+async function enrichVisibleLibraryMetadata() {
+    if (libraryMetadataBatch.running) return;
+    const candidates = filteredLibraryItems().filter(assetNeedsCivitaiMetadata);
+    if (!candidates.length) {
+        showToast(t("All visible models already have Civitai metadata and previews"));
+        return;
+    }
+    if (!confirm(t("Match Civitai information for {count} visible models? Hashing large files may take a while.", { count: candidates.length }))) {
+        return;
+    }
+    libraryMetadataBatch = {
+        running: true,
+        cancelRequested: false,
+        total: candidates.length,
+        completed: 0,
+        matched: 0,
+        notFound: 0,
+        failed: 0,
+        current: "",
+    };
+    render();
+    for (const asset of candidates) {
+        if (libraryMetadataBatch.cancelRequested) break;
+        libraryMetadataBatch.current = asset.name || asset.filename || "";
+        updateLibraryMetadataBatchStatus();
+        try {
+            const data = await apiPost("/asset/metadata", assetLocationPayload(asset));
+            if (data.matched) libraryMetadataBatch.matched += 1;
+            else libraryMetadataBatch.notFound += 1;
+        } catch (err) {
+            libraryMetadataBatch.failed += 1;
+            console.warn("[Civitai Manager] Metadata match failed:", asset.absolute_path, err);
+        } finally {
+            libraryMetadataBatch.completed += 1;
+            updateLibraryMetadataBatchStatus();
+        }
+    }
+    const cancelled = libraryMetadataBatch.cancelRequested;
+    libraryMetadataBatch.running = false;
+    libraryMetadataBatch.current = "";
+    await loadLibrary(true);
+    showToast(t(cancelled ? "Metadata matching stopped" : "Metadata matching completed"));
+}
+
+function cancelLibraryMetadataBatch() {
+    if (!libraryMetadataBatch.running) return;
+    libraryMetadataBatch.cancelRequested = true;
+    updateLibraryMetadataBatchStatus();
 }
 
 async function toggleSelectedFavorite() {
@@ -1835,7 +1942,12 @@ function renderLibrary() {
         <section class="cmgr-page">
             <div class="cmgr-toolbar">
                 <h2>${escapeHtml(t("Library"))} · ${escapeHtml(assetKindLabel(state.assetKind))}${filterText ? ` · ${escapeHtml(filterText)}` : ""}</h2>
-                <button class="cmgr-secondary" data-action="refresh-library">${state.libraryLoading ? escapeHtml(t("Scanning...")) : escapeHtml(t("Refresh"))}</button>
+                <div class="cmgr-library-toolbar-actions">
+                    <button class="cmgr-secondary" data-action="enrich-library" ${libraryMetadataBatch.running ? "disabled" : ""}>${escapeHtml(t("Match missing Civitai info"))}</button>
+                    ${libraryMetadataBatch.running ? `<button class="cmgr-secondary" data-action="cancel-enrich-library">${escapeHtml(t("Stop matching"))}</button>` : ""}
+                    <button class="cmgr-secondary" data-action="refresh-library" ${libraryMetadataBatch.running ? "disabled" : ""}>${state.libraryLoading ? escapeHtml(t("Scanning...")) : escapeHtml(t("Refresh"))}</button>
+                </div>
+                ${renderLibraryMetadataBatchStatus()}
             </div>
             <div class="cmgr-split ${selected ? "has-detail" : ""}">
                 <div class="cmgr-results">
@@ -1863,6 +1975,7 @@ function renderAssetCard(asset, index = 0) {
 function renderAssetDetail(asset) {
     const baseValue = asset.base_model || inferBaseFromPath(asset);
     const categoryValue = asset.category || inferCategoryFromPath(asset);
+    const civitaiUrl = asset.civitai_url || (asset.model_id ? `https://civitai.red/models/${encodeURIComponent(asset.model_id)}${asset.version_id ? `?modelVersionId=${encodeURIComponent(asset.version_id)}` : ""}` : "");
     return `
         <div class="cmgr-detail-scroll">
             ${renderDetailPreview(asset.thumb_url, asset.name, 0)}
@@ -1872,11 +1985,19 @@ function renderAssetDetail(asset) {
                     <p>${escapeHtml(labelForRoot(asset.root_kind))} · ${escapeHtml(baseValue || "Other")} · ${escapeHtml(categoryValue || "Other")}</p>
                 </div>
             </div>
+            <div class="cmgr-detail-match-row ${asset.model_id ? "is-matched" : ""}">
+                <div>
+                    <b>${escapeHtml(t(asset.model_id ? "Civitai matched" : "Civitai not matched"))}</b>
+                    <span>${escapeHtml(asset.model_id ? `${asset.creator || t("Unknown creator")} · ${asset.version_name || asset.version_id || ""}` : t("Use the model file hash to find its Civitai page and metadata."))}</span>
+                </div>
+                <button class="cmgr-primary" data-action="enrich-asset" ${libraryMetadataBatch.running ? "disabled" : ""}>${escapeHtml(t(asset.model_id ? "Refresh Civitai info" : "Match Civitai info"))}</button>
+            </div>
             <div class="cmgr-info-list">
                 <div><span>${escapeHtml(t("File"))}</span><b>${escapeHtml(asset.filename)}</b></div>
                 <div><span>${escapeHtml(t("Relative Path"))}</span><b>${escapeHtml(asset.relative_path)}</b></div>
                 <div><span>${escapeHtml(t("Size"))}</span><b>${formatBytes(asset.size || 0)}</b></div>
-                <div><span>${escapeHtml(t("Metadata"))}</span><b>${escapeHtml(asset.metadata_status || "unknown")}</b></div>
+                <div><span>${escapeHtml(t("Metadata"))}</span><b>${escapeHtml(t(asset.model_id ? "Civitai matched" : "Civitai not matched"))}</b></div>
+                ${civitaiUrl ? `<div><span>Civitai</span><b><a href="${escapeAttr(civitaiUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t("Open model page"))} ↗</a></b></div>` : ""}
                 <div><span>${escapeHtml(t("Absolute Path"))}</span><b>${escapeHtml(asset.absolute_path || "")}</b></div>
             </div>
             <div class="cmgr-section-title">${escapeHtml(t("Trigger Words"))}</div>
@@ -1903,7 +2024,6 @@ function renderAssetDetail(asset) {
             <div class="cmgr-action-row">
                 <button class="cmgr-secondary" data-action="favorite-asset">${escapeHtml(t(asset.favorite ? "Unfavorite" : "Favorite"))}</button>
                 <button class="cmgr-secondary" data-action="open-folder">${escapeHtml(t("Open Folder"))}</button>
-                <button class="cmgr-secondary" data-action="enrich-asset">${escapeHtml(t("Hash + Fetch Metadata"))}</button>
                 <button class="cmgr-danger" data-action="delete-asset">${escapeHtml(t("Delete"))}</button>
             </div>
         </div>
@@ -2213,6 +2333,10 @@ function bindLibraryEvents(root) {
     });
     const refresh = root.querySelector('[data-action="refresh-library"]');
     if (refresh) refresh.onclick = () => loadLibrary(true);
+    const enrichLibrary = root.querySelector('[data-action="enrich-library"]');
+    if (enrichLibrary) enrichLibrary.onclick = () => enrichVisibleLibraryMetadata();
+    const cancelEnrichLibrary = root.querySelector('[data-action="cancel-enrich-library"]');
+    if (cancelEnrichLibrary) cancelEnrichLibrary.onclick = () => cancelLibraryMetadataBatch();
     attachRememberedScroll(root.querySelector(".cmgr-results"), "libraryResults");
     root.querySelectorAll("[data-asset-id]").forEach((card) => {
         card.onclick = () => {

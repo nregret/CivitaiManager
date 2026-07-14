@@ -1041,10 +1041,12 @@ def _first_preview_url(version: dict[str, Any], model: dict[str, Any]) -> str:
     for images in (version.get("images"), model.get("images")):
         if isinstance(images, list):
             for image in images:
-                if isinstance(image, dict) and image.get("url"):
-                    return str(image["url"])
-                if isinstance(image, str):
-                    return image
+                url = str(image.get("url") or "") if isinstance(image, dict) else str(image or "")
+                media_type = str(image.get("type") or "").lower() if isinstance(image, dict) else ""
+                clean_url = url.split("?", 1)[0].lower()
+                if not url or "video" in media_type or re.search(r"\.(?:mp4|webm|mov|m4v|avi)$", clean_url):
+                    continue
+                return url
     return ""
 
 
@@ -1283,6 +1285,7 @@ def _scan_library_kind(root_kind: str) -> list[dict[str, Any]]:
                     stat = os.stat(abs_path)
                 except OSError:
                     continue
+                preview_version = int(os.path.getmtime(preview_file)) if preview_file else int(stat.st_mtime)
                 items.append({
                     "id": f"{root_kind}:{storage_root_id}:{rel_path}",
                     "root_kind": root_kind,
@@ -1301,13 +1304,16 @@ def _scan_library_kind(root_kind: str) -> list[dict[str, Any]]:
                     "creator": metadata.get("creator") or "",
                     "model_id": metadata.get("model_id"),
                     "version_id": metadata.get("version_id"),
+                    "civitai_url": metadata.get("civitai_url") or "",
+                    "metadata_match_status": metadata.get("metadata_match_status") or ("matched" if metadata.get("model_id") else "unknown"),
+                    "source": metadata.get("source") or "local",
                     "trained_words": metadata.get("trained_words") if isinstance(metadata.get("trained_words"), list) else [],
                     "tags": metadata.get("tags") if isinstance(metadata.get("tags"), list) else [],
                     "hash": hashes.get("SHA256") or hashes.get("sha256") or metadata.get("sha256") or "",
                     "favorite": bool(metadata.get("favorite")),
                     "metadata_status": metadata_status,
                     "has_preview": bool(preview_file),
-                    "thumb_url": f"{API_PREFIX}/local-preview?root_kind={urllib.parse.quote(root_kind)}&root_id={urllib.parse.quote(storage_root_id)}&path={urllib.parse.quote(rel_path)}&v={int(stat.st_mtime)}",
+                    "thumb_url": f"{API_PREFIX}/local-preview?root_kind={urllib.parse.quote(root_kind)}&root_id={urllib.parse.quote(storage_root_id)}&path={urllib.parse.quote(rel_path)}&v={preview_version}",
                 })
     return items
 
@@ -1430,19 +1436,42 @@ def _metadata_from_hash(sha256: str) -> dict[str, Any] | None:
     config = load_config()
     api_key = str(config.get("civitai_api_key") or "").strip() or None
     url = f"{CIVITAI_API_BASE}/model-versions/by-hash/{urllib.parse.quote(sha256)}"
-    data = _read_json_url(url, api_key=api_key, timeout=30)
+    data = _read_json_url_with_retries(url, api_key=api_key, timeout=30, retries=1)
     if not data or data.get("error"):
         return None
     return data
 
 
+def _stored_sha256(metadata: dict[str, Any]) -> str:
+    hashes = metadata.get("hashes") if isinstance(metadata.get("hashes"), dict) else {}
+    for value in (hashes.get("SHA256"), hashes.get("sha256"), metadata.get("sha256")):
+        clean = str(value or "").strip().lower()
+        if re.fullmatch(r"[0-9a-f]{64}", clean):
+            return clean
+    return ""
+
+
+def _complete_civitai_model(version: dict[str, Any]) -> dict[str, Any]:
+    summary = version.get("model") if isinstance(version.get("model"), dict) else {}
+    model_id = summary.get("id")
+    if not model_id:
+        return summary
+    config = load_config()
+    api_key = str(config.get("civitai_api_key") or "").strip() or None
+    url = f"{CIVITAI_API_BASE}/models/{urllib.parse.quote(str(model_id))}"
+    full = _read_json_url_with_retries(url, api_key=api_key, timeout=30, retries=1, quiet=True)
+    if not full or full.get("error"):
+        return summary
+    return {**summary, **full}
+
+
 def _enrich_metadata_worker(abs_path: str, root_kind: str) -> dict[str, Any]:
     """Hash and enrich one asset entirely off the asyncio event-loop thread."""
     with _HASH_METADATA_LOCK:
-        sha256 = _hash_file(abs_path)
-        civitai_data = _metadata_from_hash(sha256)
         existing_status, existing = _metadata_for_asset(abs_path, root_kind)
         metadata = existing if existing_status in {"cached", "invalid"} else {}
+        sha256 = _stored_sha256(metadata) or _hash_file(abs_path)
+        civitai_data = _metadata_from_hash(sha256)
         metadata.update({
             "source": metadata.get("source") or "local",
             "sha256": sha256,
@@ -1451,9 +1480,14 @@ def _enrich_metadata_worker(abs_path: str, root_kind: str) -> dict[str, Any]:
                 "SHA256": sha256.upper(),
             },
             "metadata_enriched_at": _now(),
+            "metadata_checked_at": _now(),
+            "metadata_match_status": "matched" if civitai_data else "not_found",
         })
+        preview_saved = bool(_preview_for_asset(abs_path))
+        preview_error = ""
         if civitai_data:
-            model = civitai_data.get("model") if isinstance(civitai_data.get("model"), dict) else {}
+            model = _complete_civitai_model(civitai_data)
+            preview_url = _first_preview_url(civitai_data, model)
             metadata.update({
                 "source": "civitai",
                 "model_id": model.get("id") or metadata.get("model_id"),
@@ -1469,14 +1503,32 @@ def _enrich_metadata_worker(abs_path: str, root_kind: str) -> dict[str, Any]:
                 "trained_words": civitai_data.get("trainedWords")
                 if isinstance(civitai_data.get("trainedWords"), list)
                 else metadata.get("trained_words", []),
+                "tags": model.get("tags") if isinstance(model.get("tags"), list) else metadata.get("tags", []),
+                "description": model.get("description") or metadata.get("description", ""),
+                "preview_url": preview_url or metadata.get("preview_url", ""),
+                "civitai_url": f"https://civitai.red/models/{model.get('id')}?modelVersionId={civitai_data.get('id')}"
+                if model.get("id")
+                else metadata.get("civitai_url", ""),
                 "model": model or metadata.get("model", {}),
                 "version": civitai_data,
             })
         _write_asset_metadata(abs_path, root_kind, metadata)
+        if civitai_data and not preview_saved and load_config().get("save_preview", True):
+            preview_url = str(metadata.get("preview_url") or "")
+            if preview_url:
+                try:
+                    optimized_url = _civitai_media_cache_url(preview_url, REMOTE_IMAGE_CACHE_WIDTH_DEFAULT)
+                    preview_path = _companion_preview_path(abs_path, optimized_url)
+                    _download_binary(optimized_url, preview_path, api_key=None, timeout=30)
+                    preview_saved = True
+                except Exception as exc:
+                    preview_error = str(exc)
         return {
             "sha256": sha256,
             "metadata": metadata,
             "matched": bool(civitai_data),
+            "preview_saved": preview_saved,
+            "preview_error": preview_error,
         }
 
 

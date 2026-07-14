@@ -721,6 +721,7 @@ class MetadataWorkerTests(unittest.TestCase):
                 "name": "Version",
                 "baseModel": "SDXL 1.0",
                 "trainedWords": ["trigger"],
+                "images": [{"url": "https://image.civitai.com/x/04a43bd2-a6f2-493f-ba86-c677fe642f00/original=true/preview.jpeg"}],
                 "model": {
                     "id": 11,
                     "name": "Example",
@@ -728,16 +729,60 @@ class MetadataWorkerTests(unittest.TestCase):
                     "creator": {"username": "tester"},
                 },
             }
-            with mock.patch.object(manager, "_metadata_from_hash", return_value=civitai_data):
+            full_model = {
+                **civitai_data["model"],
+                "tags": ["character", "style"],
+                "description": "Example description",
+            }
+
+            def save_preview(_url, target_path, **_kwargs):
+                Path(target_path).write_bytes(b"preview")
+
+            with (
+                mock.patch.object(manager, "_metadata_from_hash", return_value=civitai_data),
+                mock.patch.object(manager, "_complete_civitai_model", return_value=full_model),
+                mock.patch.object(manager, "_download_binary", side_effect=save_preview),
+            ):
                 result = manager._enrich_metadata_worker(str(asset), "loras")
 
             metadata_path = asset.with_suffix(".json")
             self.assertTrue(metadata_path.is_file())
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             self.assertTrue(result["matched"])
+            self.assertTrue(result["preview_saved"])
             self.assertEqual(metadata["model_id"], 11)
             self.assertEqual(metadata["version_id"], 22)
             self.assertEqual(metadata["hashes"]["SHA256"], result["sha256"].upper())
+            self.assertEqual(metadata["tags"], ["character", "style"])
+            self.assertEqual(metadata["metadata_match_status"], "matched")
+            self.assertTrue(asset.with_suffix(".jpg").is_file())
+
+    def test_worker_reuses_saved_sha256(self):
+        with tempfile.TemporaryDirectory() as root:
+            asset = Path(root) / "model.safetensors"
+            asset.write_bytes(b"model-data")
+            saved_hash = "a" * 64
+            asset.with_suffix(".json").write_text(json.dumps({
+                "hashes": {"SHA256": saved_hash.upper()},
+            }), encoding="utf-8")
+            with (
+                mock.patch.object(manager, "_hash_file", side_effect=AssertionError("hash should be reused")),
+                mock.patch.object(manager, "_metadata_from_hash", return_value=None),
+            ):
+                result = manager._enrich_metadata_worker(str(asset), "loras")
+
+        self.assertEqual(result["sha256"], saved_hash)
+        self.assertFalse(result["matched"])
+
+    def test_preview_selection_skips_video(self):
+        version = {"images": [
+            {"url": "https://example.com/preview.mp4", "type": "video"},
+            {"url": "https://example.com/preview.jpeg", "type": "image"},
+        ]}
+        self.assertEqual(
+            manager._first_preview_url(version, {}),
+            "https://example.com/preview.jpeg",
+        )
 
 
 class MetadataApiAsyncTests(unittest.IsolatedAsyncioTestCase):
