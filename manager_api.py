@@ -52,6 +52,12 @@ MODEL_EXTENSIONS = {".ckpt", ".pt", ".pt2", ".bin", ".pth", ".safetensors", ".pk
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
 WORKFLOW_EXTENSIONS = {".json"}
 REMOTE_IMAGE_CACHE_WIDTH_DEFAULT = 450
+REMOTE_IMAGE_COMMON_WIDTHS = (96, 320, 450, 512, 800, 1200, 1600, 2200)
+CIVITAI_IMAGE_HOSTS = {"image.civitai.com", "imagecache.civitai.com", "image-b2.civitai.com"}
+CIVITAI_MEDIA_ID_RE = re.compile(
+    r"(?:^|/)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:/|$)",
+    re.IGNORECASE,
+)
 TAXONOMY_CACHE_TTL = 10 * 60
 SEARCH_FALLBACK_CURSOR_PREFIX = "fallback:"
 SEARCH_FALLBACK_MAX_PAGES = 8
@@ -1905,6 +1911,33 @@ async def local_preview_api(request: web.Request) -> web.StreamResponse:
         return _placeholder_svg()
 
 
+def _snap_remote_image_width(width: int) -> int:
+    for common_width in REMOTE_IMAGE_COMMON_WIDTHS:
+        if width <= common_width:
+            return common_width
+    return width
+
+
+def _civitai_media_cache_url(source_url: str, width: int) -> str:
+    try:
+        parsed = urllib.parse.urlparse(source_url)
+    except Exception:
+        return source_url
+    if not parsed.hostname or parsed.hostname.lower() not in CIVITAI_IMAGE_HOSTS:
+        return source_url
+    if re.search(r"\.(?:mp4|webm|mov|m4v|avi)(?:$|/)", parsed.path, re.IGNORECASE):
+        return source_url
+    media_id_match = CIVITAI_MEDIA_ID_RE.search(parsed.path)
+    if not media_id_match:
+        return source_url
+    media_id = media_id_match.group(1).lower()
+    snapped_width = _snap_remote_image_width(width)
+    return (
+        "https://image-b2.civitai.com/file/civitai-media-cache/"
+        f"{media_id}/{snapped_width}x%3Cauto%3E_so"
+    )
+
+
 async def image_proxy_api(request: web.Request) -> web.StreamResponse:
     source_url = request.query.get("url", "").strip()
     if not source_url.startswith(("http://", "https://")):
@@ -1913,6 +1946,7 @@ async def image_proxy_api(request: web.Request) -> web.StreamResponse:
         width = max(80, min(int(request.query.get("width", str(REMOTE_IMAGE_CACHE_WIDTH_DEFAULT))), 1400))
     except Exception:
         width = REMOTE_IMAGE_CACHE_WIDTH_DEFAULT
+    source_url = _civitai_media_cache_url(source_url, width)
     cache_key = hashlib.sha256(f"{source_url}|{width}".encode("utf-8")).hexdigest()
     cache_path = os.path.join(_cache_dir("remote_images"), cache_key)
     meta_path = f"{cache_path}.json"
@@ -1973,7 +2007,13 @@ async def image_proxy_api(request: web.Request) -> web.StreamResponse:
         with open(cache_path, "wb") as handle:
             handle.write(data)
         with open(meta_path, "w", encoding="utf-8") as handle:
-            json.dump({"content_type": content_type}, handle)
+            json.dump({
+                "content_type": content_type,
+                "source_url": source_url,
+                "width": width,
+                "content_length": len(data),
+                "cached_at": _now(),
+            }, handle)
         return web.Response(body=data, content_type=content_type, headers={"Cache-Control": "public, max-age=31536000, immutable"})
     except Exception as exc:
         print(f"[Civitai Manager] Image proxy failed: {exc}")

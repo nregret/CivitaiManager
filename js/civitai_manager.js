@@ -2593,10 +2593,20 @@ function looksLikeVideoUrl(url) {
 function optimizeCivitaiImage(url, width) {
     const text = String(url || "");
     if (!text) return "";
-    const path = text.split("?")[0].toLowerCase();
-    if (path.endsWith("/original")) return text;
-    if (text.includes("width=")) return text.replace(/width=\d+/g, `width=${width}`);
-    return `${text}${text.includes("?") ? "&" : "?"}width=${width}`;
+    let parsed;
+    try {
+        parsed = new URL(text);
+    } catch (_) {
+        return text;
+    }
+    const imageHosts = new Set(["image.civitai.com", "imagecache.civitai.com", "image-b2.civitai.com"]);
+    if (!imageHosts.has(parsed.hostname.toLowerCase())) return text;
+    const mediaId = parsed.pathname.match(/(?:^|\/)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/|$)/i)?.[1];
+    if (!mediaId) return text;
+    const commonWidths = [96, 320, 450, 512, 800, 1200, 1600, 2200];
+    const requestedWidth = Math.max(1, Number(width) || 450);
+    const snappedWidth = commonWidths.find((value) => requestedWidth <= value) || requestedWidth;
+    return `https://image-b2.civitai.com/file/civitai-media-cache/${mediaId.toLowerCase()}/${snappedWidth}x%3Cauto%3E_so`;
 }
 
 function renderMedia(media, alt, options = {}) {

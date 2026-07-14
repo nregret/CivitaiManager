@@ -85,6 +85,35 @@ def _load_manager_api():
 manager = _load_manager_api()
 
 
+class RemoteImageVariantTests(unittest.TestCase):
+    def test_civitai_original_url_becomes_optimized_thumbnail(self):
+        source = (
+            "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/"
+            "04a43bd2-a6f2-493f-ba86-c677fe642f00/original=true/592643.jpeg?width=450"
+        )
+        self.assertEqual(
+            manager._civitai_media_cache_url(source, 450),
+            "https://image-b2.civitai.com/file/civitai-media-cache/"
+            "04a43bd2-a6f2-493f-ba86-c677fe642f00/450x%3Cauto%3E_so",
+        )
+
+    def test_width_snaps_to_official_common_size(self):
+        source = (
+            "https://image-b2.civitai.com/file/civitai-media-cache/"
+            "04a43bd2-a6f2-493f-ba86-c677fe642f00/original"
+        )
+        self.assertTrue(manager._civitai_media_cache_url(source, 700).endswith("/800x%3Cauto%3E_so"))
+
+    def test_non_civitai_and_video_urls_are_not_rewritten(self):
+        external = "https://example.com/image.jpg"
+        video = (
+            "https://image.civitai.com/x/"
+            "04a43bd2-a6f2-493f-ba86-c677fe642f00/original=true/preview.mp4"
+        )
+        self.assertEqual(manager._civitai_media_cache_url(external, 450), external)
+        self.assertEqual(manager._civitai_media_cache_url(video, 450), video)
+
+
 class PathAndConfigTests(unittest.TestCase):
     def test_safe_join_rejects_parent_escape(self):
         with tempfile.TemporaryDirectory() as root:
