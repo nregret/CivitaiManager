@@ -40,8 +40,22 @@ DOWNLOAD_MAX_WORKERS = 3
 DOWNLOAD_MAX_ACTIVE_JOBS = 20
 DOWNLOAD_JOB_HISTORY_LIMIT = 100
 DOWNLOAD_JOB_RETENTION_SECONDS = 24 * 60 * 60
+ASSET_ROOT_KINDS = {"checkpoints", "unet", "loras", "workflows"}
+ROOT_KIND_FAMILIES = {
+    "checkpoints": "checkpoint",
+    "unet": "checkpoint",
+    "loras": "lora",
+    "workflows": "workflow",
+}
+WINDOWS_RESERVED_SEGMENTS = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+CONFIG_MAX_TEXT_LENGTH = 4096
 
 _CONFIG_CACHE: dict[str, Any] | None = None
+_CONFIG_LOCK = threading.Lock()
 _DOWNLOAD_JOBS: dict[str, dict[str, Any]] = {}
 _DOWNLOAD_LOCK = threading.Lock()
 _DOWNLOAD_QUEUE: queue.Queue[tuple[str, str, str, str, dict[str, Any], str]] = queue.Queue(
@@ -116,6 +130,44 @@ def _default_config() -> dict[str, Any]:
     }
 
 
+def _config_bool(value: Any, field: str, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    raise ValueError(f"{field} must be a boolean")
+
+
+def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(_default_config())
+    normalized.update(config)
+    api_key = str(normalized.get("civitai_api_key") or "").strip()
+    if len(api_key) > CONFIG_MAX_TEXT_LENGTH or re.search(r"[\x00-\x1f\x7f]", api_key):
+        raise ValueError("civitai_api_key contains invalid characters or is too long")
+
+    workflow_dir = str(normalized.get("workflow_dir") or "").strip() or _default_workflow_dir()
+    if len(workflow_dir) > CONFIG_MAX_TEXT_LENGTH or "\x00" in workflow_dir:
+        raise ValueError("workflow_dir is invalid or too long")
+    workflow_dir = os.path.abspath(os.path.expanduser(workflow_dir))
+    if os.path.exists(workflow_dir) and not os.path.isdir(workflow_dir):
+        raise ValueError("workflow_dir must be a directory")
+
+    normalized["civitai_api_key"] = api_key
+    normalized["allow_nsfw"] = _config_bool(normalized.get("allow_nsfw"), "allow_nsfw", False)
+    normalized["save_metadata"] = _config_bool(normalized.get("save_metadata"), "save_metadata", True)
+    normalized["save_preview"] = _config_bool(normalized.get("save_preview"), "save_preview", True)
+    normalized["workflow_dir"] = workflow_dir
+    return normalized
+
+
 def load_config() -> dict[str, Any]:
     global _CONFIG_CACHE
     if _CONFIG_CACHE is not None:
@@ -129,14 +181,23 @@ def load_config() -> dict[str, Any]:
                 data = json.load(handle)
             if isinstance(data, dict):
                 config.update(data)
+            config = _normalize_config(config)
         except Exception as exc:
             print(f"[Civitai Manager] Failed to read config: {exc}")
+            config = _normalize_config(_default_config())
+    else:
+        config = _normalize_config(config)
 
     _CONFIG_CACHE = config
     return dict(config)
 
 
 def save_config(data: dict[str, Any]) -> dict[str, Any]:
+    with _CONFIG_LOCK:
+        return _save_config_unlocked(data)
+
+
+def _save_config_unlocked(data: dict[str, Any]) -> dict[str, Any]:
     global _CONFIG_CACHE
     current = load_config()
     writable = {
@@ -149,12 +210,7 @@ def save_config(data: dict[str, Any]) -> dict[str, Any]:
     for key in writable:
         if key in data:
             current[key] = data[key]
-
-    current["allow_nsfw"] = bool(current.get("allow_nsfw"))
-    current["save_metadata"] = bool(current.get("save_metadata", True))
-    current["save_preview"] = bool(current.get("save_preview", True))
-    current["civitai_api_key"] = str(current.get("civitai_api_key") or "").strip()
-    current["workflow_dir"] = str(current.get("workflow_dir") or "").strip() or _default_workflow_dir()
+    current = _normalize_config(current)
 
     path = _config_path()
     tmp_path = f"{path}.tmp"
@@ -270,7 +326,10 @@ def _safe_segment(value: Any, fallback: str = "Other", max_len: int = 80) -> str
     text = re.sub(r"\s+", " ", text).strip(" ._")
     if not text:
         text = fallback
-    return text[:max_len].strip(" ._") or fallback
+    text = text[:max_len].strip(" ._") or fallback
+    if text and os.path.splitext(text)[0].upper() in WINDOWS_RESERVED_SEGMENTS:
+        text = f"_{text}"
+    return text
 
 
 def _safe_filename(value: Any, fallback: str, extension: str = ".safetensors") -> str:
@@ -284,9 +343,42 @@ def _safe_filename(value: Any, fallback: str, extension: str = ".safetensors") -
 def _safe_join(root: str, *parts: str) -> str:
     root_abs = os.path.abspath(root)
     path_abs = os.path.abspath(os.path.join(root_abs, *parts))
-    if os.path.commonpath([root_abs, path_abs]) != root_abs:
+    root_real = os.path.normcase(os.path.realpath(root_abs))
+    path_real = os.path.normcase(os.path.realpath(path_abs))
+    if os.path.commonpath([root_real, path_real]) != root_real:
         raise ValueError("Resolved path escapes allowed root")
     return path_abs
+
+
+def _normalize_root_kind(root_kind: Any) -> str:
+    normalized = str(root_kind or "").strip().lower()
+    if normalized not in ASSET_ROOT_KINDS:
+        raise ValueError(f"Unknown asset root: {normalized or '(empty)'}")
+    return normalized
+
+
+def _extensions_for_root(root_kind: str) -> set[str]:
+    normalized = _normalize_root_kind(root_kind)
+    return WORKFLOW_EXTENSIONS if normalized == "workflows" else MODEL_EXTENSIONS
+
+
+def _validate_asset_filename(root_kind: str, filename: str) -> str:
+    normalized = _normalize_root_kind(root_kind)
+    name = os.path.basename(str(filename or ""))
+    extension = os.path.splitext(name)[1].lower()
+    if normalized == "workflows" and name.lower().endswith(".civitai.json"):
+        raise ValueError("Workflow companion metadata is not an asset")
+    if extension not in _extensions_for_root(normalized):
+        allowed = ", ".join(sorted(_extensions_for_root(normalized)))
+        raise ValueError(f"Invalid {normalized} file extension; expected one of: {allowed}")
+    return name
+
+
+def _validate_root_transition(source_root_kind: str, target_root_kind: str) -> None:
+    source = _normalize_root_kind(source_root_kind)
+    target = _normalize_root_kind(target_root_kind)
+    if ROOT_KIND_FAMILIES[source] != ROOT_KIND_FAMILIES[target]:
+        raise ValueError(f"Cannot move an asset from {source} to {target}")
 
 
 def _first_folder_path(folder_name: str, fallback: str) -> str:
@@ -300,7 +392,7 @@ def _first_folder_path(folder_name: str, fallback: str) -> str:
 
 
 def _root_for_kind(root_kind: str) -> str:
-    root_kind = str(root_kind or "").lower()
+    root_kind = _normalize_root_kind(root_kind)
     if root_kind == "loras":
         return _first_folder_path("loras", os.path.join(folder_paths.models_dir, "loras"))
     if root_kind == "checkpoints":
@@ -846,13 +938,22 @@ def resolve_download_path(
     overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     overrides = overrides or {}
-    root_kind = _safe_segment(overrides.get("root_kind") or _root_kind_for(model, version, file_info, requested_kind), "checkpoints").lower()
-    if root_kind not in {"checkpoints", "unet", "loras", "workflows"}:
-        root_kind = "checkpoints"
+    default_root_kind = _normalize_root_kind(_root_kind_for(model, version, file_info, requested_kind))
+    root_kind = _normalize_root_kind(overrides.get("root_kind") or default_root_kind)
+    _validate_root_transition(default_root_kind, root_kind)
 
     base_model_dir = _safe_segment(overrides.get("base_model_dir") or _version_base_model(version, model), "Other")
     category_dir = _safe_segment(overrides.get("category_dir") or _category_name(model), "Other")
-    filename = _safe_filename(overrides.get("filename") or _filename_for(model, version, file_info, root_kind), "civitai_asset", _file_extension_for(root_kind, file_info))
+    default_extension = _file_extension_for(root_kind, file_info)
+    override_filename = str(overrides.get("filename") or "").strip()
+    if override_filename:
+        filename = _safe_filename(override_filename, "civitai_asset", default_extension)
+        _validate_asset_filename(root_kind, filename)
+    else:
+        filename = _filename_for(model, version, file_info, root_kind)
+        if os.path.splitext(filename)[1].lower() not in _extensions_for_root(root_kind):
+            filename = f"{os.path.splitext(filename)[0]}{default_extension}"
+        _validate_asset_filename(root_kind, filename)
 
     root_dir = _root_for_kind(root_kind)
     if root_kind == "workflows":
@@ -1143,8 +1244,17 @@ def _metadata_for_asset(abs_path: str, root_kind: str) -> tuple[str, dict[str, A
 def _write_asset_metadata(abs_path: str, root_kind: str, metadata: dict[str, Any]) -> None:
     path = _companion_metadata_path(abs_path, root_kind)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(metadata, handle, indent=2, ensure_ascii=False)
+    temp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump(metadata, handle, indent=2, ensure_ascii=False)
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 
 def _preview_for_asset(abs_path: str) -> str:
@@ -1230,22 +1340,83 @@ def _scan_all_library_items() -> list[dict[str, Any]]:
 
 
 def _resolve_asset_path(root_kind: str, rel_path: str) -> str:
-    root_kind = str(root_kind or "").lower()
+    root_kind = _normalize_root_kind(root_kind)
     root = _root_for_kind(root_kind)
     rel_path = str(rel_path or "").replace("\\", "/").lstrip("/")
-    return _safe_join(root, rel_path)
+    abs_path = _safe_join(root, rel_path)
+    _validate_asset_filename(root_kind, os.path.basename(abs_path))
+    return abs_path
 
 
-def _move_companions(src_path: str, dst_path: str, root_kind: str) -> None:
-    companions = [
-        (_companion_metadata_path(src_path, root_kind), _companion_metadata_path(dst_path, root_kind)),
-    ]
+def _companion_move_pairs(
+    src_path: str,
+    dst_path: str,
+    source_root_kind: str,
+    target_root_kind: str,
+) -> list[tuple[str, str]]:
+    companions = [(
+        _companion_metadata_path(src_path, source_root_kind),
+        _companion_metadata_path(dst_path, target_root_kind),
+    )]
     for ext in IMAGE_EXTENSIONS:
         companions.append((os.path.splitext(src_path)[0] + ext, os.path.splitext(dst_path)[0] + ext))
-    for src, dst in companions:
-        if os.path.isfile(src):
+    return [(src, dst) for src, dst in companions if os.path.isfile(src)]
+
+
+def _move_asset_bundle(
+    src_path: str,
+    dst_path: str,
+    source_root_kind: str,
+    target_root_kind: str,
+) -> None:
+    moves = [(src_path, dst_path), *_companion_move_pairs(
+        src_path,
+        dst_path,
+        source_root_kind,
+        target_root_kind,
+    )]
+    for _, dst in moves:
+        if os.path.exists(dst):
+            raise FileExistsError(f"Target already exists: {dst}")
+
+    completed: list[tuple[str, str]] = []
+    try:
+        for src, dst in moves:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.move(src, dst)
+            completed.append((src, dst))
+    except Exception:
+        for src, dst in reversed(completed):
+            if os.path.exists(dst) and not os.path.exists(src):
+                try:
+                    os.makedirs(os.path.dirname(src), exist_ok=True)
+                    shutil.move(dst, src)
+                except Exception as rollback_exc:
+                    print(f"[Civitai Manager] Failed to roll back move {dst}: {rollback_exc}")
+        raise
+
+
+def _update_moved_asset_metadata(
+    dst_path: str,
+    target_root_kind: str,
+    relative_path: str,
+    base_model_dir: str,
+    category_dir: str,
+    filename: str,
+) -> None:
+    status, metadata = _metadata_for_asset(dst_path, target_root_kind)
+    if status != "cached":
+        return
+    resolution = metadata.get("resolution") if isinstance(metadata.get("resolution"), dict) else {}
+    resolution.update({
+        "root_kind": target_root_kind,
+        "base_model_dir": "" if target_root_kind == "workflows" else base_model_dir,
+        "category_dir": category_dir,
+        "filename": filename,
+        "relative_path": relative_path,
+    })
+    metadata["resolution"] = resolution
+    _write_asset_metadata(dst_path, target_root_kind, metadata)
 
 
 def _delete_companions(asset_path: str, root_kind: str) -> None:
@@ -1552,8 +1723,10 @@ async def save_config_api(request: web.Request) -> web.Response:
         body = await request.json()
         if not isinstance(body, dict):
             return web.json_response({"success": False, "error": "Config payload must be an object"}, status=400)
-        config = save_config(body)
+        config = await asyncio.to_thread(save_config, body)
         return web.json_response({"success": True, "config": _public_config(config)})
+    except ValueError as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=400)
     except Exception as exc:
         return web.json_response({"success": False, "error": str(exc)}, status=500)
 
@@ -1648,6 +1821,8 @@ async def resolve_path_api(request: web.Request) -> web.Response:
         resolution = resolve_download_path(model, version, file_info, requested_kind, overrides)
         resolution["exists"] = os.path.exists(resolution["absolute_path"])
         return web.json_response({"success": True, "resolution": resolution})
+    except ValueError as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=400)
     except Exception as exc:
         return web.json_response({"success": False, "error": str(exc)}, status=500)
 
@@ -1705,6 +1880,8 @@ async def download_api(request: web.Request) -> web.Response:
                 "error": "Download queue is full",
             }, status=429)
         return web.json_response({"success": True, "task_id": task_id, "resolution": resolution})
+    except ValueError as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=400)
     except Exception as exc:
         return web.json_response({"success": False, "error": str(exc)}, status=500)
 
@@ -1820,7 +1997,7 @@ async def image_proxy_api(request: web.Request) -> web.StreamResponse:
 async def delete_asset_api(request: web.Request) -> web.Response:
     try:
         body = await request.json()
-        root_kind = str(body.get("root_kind") or "")
+        root_kind = _normalize_root_kind(body.get("root_kind"))
         rel_path = str(body.get("relative_path") or "")
         abs_path = _resolve_asset_path(root_kind, rel_path)
         if not os.path.isfile(abs_path):
@@ -1828,6 +2005,8 @@ async def delete_asset_api(request: web.Request) -> web.Response:
         os.remove(abs_path)
         _delete_companions(abs_path, root_kind)
         return web.json_response({"success": True})
+    except ValueError as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=400)
     except Exception as exc:
         return web.json_response({"success": False, "error": str(exc)}, status=500)
 
@@ -1835,12 +2014,14 @@ async def delete_asset_api(request: web.Request) -> web.Response:
 async def move_asset_api(request: web.Request) -> web.Response:
     try:
         body = await request.json()
-        source_root_kind = str(body.get("root_kind") or "")
+        source_root_kind = _normalize_root_kind(body.get("root_kind"))
         source_rel_path = str(body.get("relative_path") or "")
-        target_root_kind = str(body.get("target_root_kind") or source_root_kind).lower()
+        target_root_kind = _normalize_root_kind(body.get("target_root_kind") or source_root_kind)
+        _validate_root_transition(source_root_kind, target_root_kind)
         base_model_dir = _safe_segment(body.get("base_model_dir"), "Other")
         category_dir = _safe_segment(body.get("category_dir"), "Other")
         filename = _safe_filename(body.get("filename"), os.path.basename(source_rel_path), os.path.splitext(source_rel_path)[1] or ".safetensors")
+        _validate_asset_filename(target_root_kind, filename)
 
         src_path = _resolve_asset_path(source_root_kind, source_rel_path)
         if not os.path.isfile(src_path):
@@ -1850,17 +2031,26 @@ async def move_asset_api(request: web.Request) -> web.Response:
             dst_path = _safe_join(target_root, category_dir, filename)
         else:
             dst_path = _safe_join(target_root, base_model_dir, category_dir, filename)
-        if os.path.exists(dst_path):
-            return web.json_response({"success": False, "error": "Target already exists"}, status=409)
-        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-        shutil.move(src_path, dst_path)
-        _move_companions(src_path, dst_path, source_root_kind)
+        relative_path = os.path.relpath(dst_path, target_root).replace("\\", "/")
+        _move_asset_bundle(src_path, dst_path, source_root_kind, target_root_kind)
+        _update_moved_asset_metadata(
+            dst_path,
+            target_root_kind,
+            relative_path,
+            base_model_dir,
+            category_dir,
+            filename,
+        )
         return web.json_response({
             "success": True,
-            "relative_path": os.path.relpath(dst_path, target_root).replace("\\", "/"),
+            "relative_path": relative_path,
             "absolute_path": dst_path,
             "root_kind": target_root_kind,
         })
+    except FileExistsError as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=409)
+    except ValueError as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=400)
     except Exception as exc:
         return web.json_response({"success": False, "error": str(exc)}, status=500)
 
@@ -1868,9 +2058,9 @@ async def move_asset_api(request: web.Request) -> web.Response:
 async def favorite_asset_api(request: web.Request) -> web.Response:
     try:
         body = await request.json()
-        root_kind = str(body.get("root_kind") or "")
+        root_kind = _normalize_root_kind(body.get("root_kind"))
         rel_path = str(body.get("relative_path") or "")
-        favorite = bool(body.get("favorite"))
+        favorite = _config_bool(body.get("favorite"), "favorite", False)
         abs_path = _resolve_asset_path(root_kind, rel_path)
         if not os.path.isfile(abs_path):
             return web.json_response({"success": False, "error": "Asset not found"}, status=404)
@@ -1888,6 +2078,8 @@ async def favorite_asset_api(request: web.Request) -> web.Response:
         metadata["favorite_updated_at"] = _now()
         _write_asset_metadata(abs_path, root_kind, metadata)
         return web.json_response({"success": True, "favorite": favorite})
+    except ValueError as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=400)
     except Exception as exc:
         return web.json_response({"success": False, "error": str(exc)}, status=500)
 
@@ -1895,7 +2087,7 @@ async def favorite_asset_api(request: web.Request) -> web.Response:
 async def open_folder_api(request: web.Request) -> web.Response:
     try:
         body = await request.json()
-        root_kind = str(body.get("root_kind") or "")
+        root_kind = _normalize_root_kind(body.get("root_kind"))
         rel_path = str(body.get("relative_path") or "")
         abs_path = _resolve_asset_path(root_kind, rel_path)
         if not os.path.exists(abs_path):
@@ -1908,6 +2100,8 @@ async def open_folder_api(request: web.Request) -> web.Response:
         else:
             subprocess.Popen(["xdg-open", folder])
         return web.json_response({"success": True, "folder": folder})
+    except ValueError as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=400)
     except Exception as exc:
         return web.json_response({"success": False, "error": str(exc)}, status=500)
 
@@ -1919,7 +2113,7 @@ def sys_platform() -> str:
 async def enrich_metadata_api(request: web.Request) -> web.Response:
     try:
         body = await request.json()
-        root_kind = str(body.get("root_kind") or "")
+        root_kind = _normalize_root_kind(body.get("root_kind"))
         rel_path = str(body.get("relative_path") or "")
         abs_path = _resolve_asset_path(root_kind, rel_path)
         if not os.path.isfile(abs_path):
@@ -1927,6 +2121,8 @@ async def enrich_metadata_api(request: web.Request) -> web.Response:
         async with _HASH_METADATA_REQUEST_LOCK:
             result = await asyncio.to_thread(_enrich_metadata_worker, abs_path, root_kind)
         return web.json_response({"success": True, **result})
+    except ValueError as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=400)
     except Exception as exc:
         return web.json_response({"success": False, "error": str(exc)}, status=500)
 

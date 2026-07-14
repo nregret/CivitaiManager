@@ -42,6 +42,14 @@ ComfyUI Browser UI
 
 下载任务在内存中管理：最多保留 100 条已结束记录，结束 24 小时后自动清理。ComfyUI 重启后任务历史不会恢复。
 
+## 数据安全约束
+
+- 本地资源接口只接受对应类型的资源文件扩展名，不允许直接操作 companion JSON。
+- Checkpoint 与 UNet 可以互相移动；LoRA 和 Workflow 只能在各自类型目录中移动。
+- 移动前会检查目标资源及 companion 文件冲突；中途失败时会尽力回滚已移动文件。
+- 移动完成后会同步更新 companion 元数据中的根目录、分类、文件名和相对路径。
+- Workflow 目录必须是有效目录路径，配置布尔值会进行显式解析，不使用字符串真值推断。
+
 ## 开发与验证
 
 在本目录运行：
@@ -52,7 +60,7 @@ python -c "import ast,pathlib; [ast.parse(pathlib.Path(p).read_text(encoding='ut
 node --check js\civitai_manager.js
 ```
 
-单元测试使用临时目录和 ComfyUI 模块替身，不访问网络，也不会修改真实模型目录。
+单元测试使用临时目录和 ComfyUI 模块替身，不访问网络，也不会修改真实模型目录。覆盖路径逃逸、配置校验、搜索回退、下载状态、Library 扫描、资源移动/删除、companion 文件和元数据补全。
 
 ## 当前工程边界
 

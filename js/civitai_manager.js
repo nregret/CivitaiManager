@@ -1777,7 +1777,9 @@ function renderPathEditor(resolution) {
             <label>Type${renderSelectMenu({
                 id: "override-root-kind",
                 value: state.pathOverrides.root_kind || "",
-                options: ROOT_KINDS.map((root) => ({ value: root.id, label: root.label })),
+                options: ROOT_KINDS
+                    .filter((root) => rootKindsForAssetKind(state.assetKind).includes(root.id))
+                    .map((root) => ({ value: root.id, label: root.label })),
                 inputAttrs: 'data-override="root_kind"',
             })}</label>
             <label>Base Model<input class="cmgr-input" data-override="base_model_dir" value="${escapeAttr(state.pathOverrides.base_model_dir || "")}" ${state.pathOverrides.root_kind === "workflows" ? "disabled" : ""} /></label>
@@ -1862,7 +1864,9 @@ function renderAssetDetail(asset) {
                     <label>Type${renderSelectMenu({
                         id: "move-root-kind",
                         value: asset.root_kind || "",
-                        options: ROOT_KINDS.map((root) => ({ value: root.id, label: root.label })),
+                        options: ROOT_KINDS
+                            .filter((root) => compatibleRootKinds(asset.root_kind).includes(root.id))
+                            .map((root) => ({ value: root.id, label: root.label })),
                         inputAttrs: 'data-move="target_root_kind"',
                     })}</label>
                     <label>Base Model<input class="cmgr-input" data-move="base_model_dir" value="${escapeAttr(baseValue || "Other")}" ${asset.root_kind === "workflows" ? "disabled" : ""}/></label>
@@ -2267,6 +2271,12 @@ function rootKindsForAssetKind(kind) {
     if (Array.isArray(found?.rootKinds)) return found.rootKinds;
     if (kind === "workflow") return ["workflows"];
     if (kind === "checkpoint") return ["checkpoints", "unet"];
+    return ["loras"];
+}
+
+function compatibleRootKinds(rootKind) {
+    if (["checkpoints", "unet"].includes(rootKind)) return ["checkpoints", "unet"];
+    if (rootKind === "workflows") return ["workflows"];
     return ["loras"];
 }
 
