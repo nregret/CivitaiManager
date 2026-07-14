@@ -756,6 +756,7 @@ function renderSelectedModelDetail() {
     }
     bindCommonEvents(bodyEl);
     bindDiscoverEvents(bodyEl);
+    setupDetailPreviewUpgrades(next);
     return true;
 }
 
@@ -1746,8 +1747,7 @@ function renderModelDetail(model) {
     const modelUrl = `https://civitai.red/models/${encodeURIComponent(model.id || "")}`;
     return `
         <div class="cmgr-detail-scroll">
-            <button class="cmgr-detail-close" data-action="close-detail" title="${escapeAttr(t("Close detail"))}">×</button>
-            ${renderDetailPreview(modelPreviewItems(model, version, 700, { diskCache: false }), model.name, state.detailPreviewIndex)}
+            ${renderModelDetailPreview(model, version, state.detailPreviewIndex)}
             <div class="cmgr-detail-head">
                 <div>
                     <a class="cmgr-detail-title-link" href="${escapeAttr(modelUrl)}" target="_blank" rel="noopener noreferrer" title="Open on Civitai red">
@@ -1869,7 +1869,6 @@ function renderAssetDetail(asset) {
     const categoryValue = asset.category || inferCategoryFromPath(asset);
     return `
         <div class="cmgr-detail-scroll">
-            <button class="cmgr-detail-close" data-action="close-detail" title="${escapeAttr(t("Close detail"))}">×</button>
             ${renderDetailPreview(asset.thumb_url, asset.name, 0)}
             <div class="cmgr-detail-head">
                 <div>
@@ -2082,6 +2081,7 @@ function bindActiveTabEvents(root) {
 function setupLazyPreviews(root) {
     previewObserver?.disconnect();
     previewObserver = null;
+    setupDetailPreviewUpgrades(root);
     const pending = [...root.querySelectorAll("img[data-cmgr-src], video[data-cmgr-src]")];
     if (!pending.length) return;
 
@@ -2109,6 +2109,26 @@ function setupLazyPreviews(root) {
     } else {
         pending.forEach(loadImage);
     }
+}
+
+function setupDetailPreviewUpgrades(root) {
+    root.querySelectorAll("img[data-cmgr-upgrade-src]").forEach((img) => {
+        const upgradeUrl = img.dataset.cmgrUpgradeSrc;
+        if (!upgradeUrl || img.dataset.cmgrUpgradeStarted === "1") return;
+        img.dataset.cmgrUpgradeStarted = "1";
+        const highResolution = new Image();
+        highResolution.decoding = "async";
+        highResolution.fetchPriority = "high";
+        highResolution.onload = () => {
+            if (!img.isConnected) return;
+            img.dataset.cmgrUpgraded = "1";
+            img.src = upgradeUrl;
+        };
+        highResolution.onerror = () => {
+            img.removeAttribute("data-cmgr-upgrade-src");
+        };
+        highResolution.src = upgradeUrl;
+    });
 }
 
 function bindDiscoverEvents(root) {
@@ -2156,12 +2176,6 @@ function bindDiscoverEvents(root) {
     const moreBtn = root.querySelector('[data-action="load-more"]');
     if (moreBtn) moreBtn.onclick = () => search(false);
     attachRememberedScroll(root.querySelector(".cmgr-results"), "discoverResults", maybeAutoLoadMore);
-    const closeDetail = root.querySelector('[data-action="close-detail"]');
-    if (closeDetail) closeDetail.onclick = () => {
-        state.selectedModel = null;
-        state.resolution = null;
-        renderSelectedModelDetail() || render();
-    };
     root.querySelectorAll("[data-model-id]").forEach((card) => {
         card.onclick = () => {
             const results = card.closest(".cmgr-results");
@@ -2206,13 +2220,9 @@ function bindDiscoverEvents(root) {
             state.detailPreviewIndex = Math.max(0, state.detailPreviewIndex + delta);
             const preview = btn.closest(".cmgr-detail-preview");
             if (preview && state.selectedModel) {
-                preview.outerHTML = renderDetailPreview(
-                    modelPreviewItems(state.selectedModel, getSelectedVersion(), 700, { diskCache: false }),
-                    state.selectedModel.name,
-                    state.detailPreviewIndex,
-                );
+                preview.outerHTML = renderModelDetailPreview(state.selectedModel, getSelectedVersion(), state.detailPreviewIndex);
                 bindDiscoverEvents(bodyEl);
-                setupLazyPreviews(bodyEl.querySelector(".cmgr-detail") || bodyEl);
+                setupDetailPreviewUpgrades(bodyEl.querySelector(".cmgr-detail") || bodyEl);
             } else {
                 renderSelectedModelDetail();
             }
@@ -2230,11 +2240,6 @@ function bindLibraryEvents(root) {
     const refresh = root.querySelector('[data-action="refresh-library"]');
     if (refresh) refresh.onclick = () => loadLibrary(true);
     attachRememberedScroll(root.querySelector(".cmgr-results"), "libraryResults");
-    const closeDetail = root.querySelector('[data-action="close-detail"]');
-    if (closeDetail) closeDetail.onclick = () => {
-        state.selectedAssetId = "";
-        render();
-    };
     root.querySelectorAll("[data-asset-id]").forEach((card) => {
         card.onclick = () => {
             const results = card.closest(".cmgr-results");
@@ -2574,6 +2579,15 @@ function modelPreviewUrl(model, width = 450) {
     return modelPreviewMedia(model, width).url;
 }
 
+function renderModelDetailPreview(model, version, index = 0) {
+    return renderDetailPreview(
+        modelPreviewItems(model, version, 700, { diskCache: false }),
+        model.name,
+        index,
+        { cachedPreview: modelPreviewMedia(model, 450) },
+    );
+}
+
 function normalizePreviewMedia(image, width, options = {}) {
     const rawUrl = typeof image === "string" ? image : image?.url || image?.videoUrl || image?.thumbnailUrl || "";
     if (!rawUrl) return { url: "", type: "image" };
@@ -2634,7 +2648,7 @@ function renderMedia(media, alt, options = {}) {
     return renderImage(normalized, alt, options);
 }
 
-function renderDetailPreview(media, alt, index = 0) {
+function renderDetailPreview(media, alt, index = 0, options = {}) {
     const items = Array.isArray(media)
         ? media
         : [typeof media === "string" ? { url: media, type: looksLikeVideoUrl(media) ? "video" : "image" } : media || {}];
@@ -2643,14 +2657,32 @@ function renderDetailPreview(media, alt, index = 0) {
     const selectedIndex = ((Number(index) || 0) % list.length + list.length) % list.length;
     const normalized = list[selectedIndex] || {};
     const url = normalized.url || "";
-    const bg = url ? renderDetailPreviewBackground(normalized, alt) : "";
+    let displayMedia = normalized;
+    if (url && normalized.type !== "video" && normalized.rawUrl) {
+        const cachedPreview = options.cachedPreview || {};
+        const reusesCachedCard = cachedPreview.url && cachedPreview.rawUrl === normalized.rawUrl;
+        const placeholderUrl = reusesCachedCard
+            ? cachedPreview.url
+            : optimizeCivitaiImage(normalized.rawUrl, 450);
+        if (placeholderUrl && placeholderUrl !== url) {
+            displayMedia = {
+                ...normalized,
+                placeholderUrl,
+                fallbackUrl: url,
+            };
+        }
+    }
+    const backgroundMedia = displayMedia.placeholderUrl
+        ? { ...displayMedia, url: displayMedia.placeholderUrl }
+        : displayMedia;
+    const bg = url ? renderDetailPreviewBackground(backgroundMedia, alt) : "";
     const nav = list.length > 1 ? `
         <button class="cmgr-detail-preview-nav prev" data-preview-delta="-1" title="Previous preview">‹</button>
         <button class="cmgr-detail-preview-nav next" data-preview-delta="1" title="Next preview">›</button>
         <div class="cmgr-detail-preview-count">${selectedIndex + 1} / ${list.length}</div>
     ` : "";
     const previewKey = `${normalized.type || "image"}:${url}:${selectedIndex}`;
-    return `<div class="cmgr-detail-preview" data-preview-index="${selectedIndex}" data-preview-key="${escapeAttr(previewKey)}">${bg}${renderMedia(normalized, alt, { priority: "high", detail: true })}${nav}</div>`;
+    return `<div class="cmgr-detail-preview" data-preview-index="${selectedIndex}" data-preview-key="${escapeAttr(previewKey)}">${bg}${renderMedia(displayMedia, alt, { priority: "high", detail: true })}${nav}</div>`;
 }
 
 function renderDetailPreviewBackground(media, alt) {
@@ -2677,15 +2709,19 @@ function renderVideo(url, alt, options = {}) {
 
 function renderImage(url, alt, options = {}) {
     const sourceUrl = typeof url === "string" ? url : url?.url || "";
+    const placeholderUrl = typeof url === "string" ? "" : url?.placeholderUrl || "";
+    const displayUrl = placeholderUrl || sourceUrl;
+    const upgradeUrl = placeholderUrl && placeholderUrl !== sourceUrl ? sourceUrl : "";
     const fallbackUrl = typeof url === "string" ? "" : url?.fallbackUrl || url?.rawUrl || "";
     if (!sourceUrl) return `<div class="cmgr-no-image">${escapeHtml(t("No Preview"))}</div>`;
-    const loaded = window.__cmgrLoadedImageUrls?.has(sourceUrl);
+    const loaded = window.__cmgrLoadedImageUrls?.has(displayUrl);
     const defer = options.defer === true && !loaded;
-    const src = defer ? TRANSPARENT_PIXEL : sourceUrl;
-    const lazyAttrs = defer ? `data-cmgr-src="${escapeAttr(sourceUrl)}" data-cmgr-loaded="0" fetchpriority="low"` : `fetchpriority="${options.priority || "auto"}"`;
-    const fallbackAttr = fallbackUrl && fallbackUrl !== sourceUrl ? `data-fallback-src="${escapeAttr(fallbackUrl)}"` : "";
+    const src = defer ? TRANSPARENT_PIXEL : displayUrl;
+    const lazyAttrs = defer ? `data-cmgr-src="${escapeAttr(displayUrl)}" data-cmgr-loaded="0" fetchpriority="low"` : `fetchpriority="${options.priority || "auto"}"`;
+    const upgradeAttr = !defer && upgradeUrl ? `data-cmgr-upgrade-src="${escapeAttr(upgradeUrl)}"` : "";
+    const fallbackAttr = fallbackUrl && fallbackUrl !== displayUrl ? `data-fallback-src="${escapeAttr(fallbackUrl)}"` : "";
     const imageState = loaded ? "is-loaded" : (defer ? "is-pending" : "is-loading");
-    return `<img class="cmgr-preview-img ${imageState}" src="${escapeAttr(src)}" ${lazyAttrs} ${fallbackAttr} alt="${escapeAttr(alt || "Preview")}" loading="${defer ? "lazy" : "eager"}" decoding="async" onload="if(!this.dataset.cmgrSrc || this.dataset.cmgrLoaded==='1'){window.__cmgrMarkImageLoaded?.(this.dataset.cmgrSrc || this.currentSrc || this.src); this.classList.remove('is-pending','is-loading'); this.classList.add('is-loaded')}" onerror="if(this.dataset.fallbackSrc&&!this.dataset.triedFallback){this.dataset.triedFallback='1';this.src=this.dataset.fallbackSrc;}else{this.replaceWith(Object.assign(document.createElement('div'),{className:'cmgr-no-image',textContent:'No Preview'}))}" />`;
+    return `<img class="cmgr-preview-img ${imageState}" src="${escapeAttr(src)}" ${lazyAttrs} ${upgradeAttr} ${fallbackAttr} alt="${escapeAttr(alt || "Preview")}" loading="${defer ? "lazy" : "eager"}" decoding="async" onload="if(!this.dataset.cmgrSrc || this.dataset.cmgrLoaded==='1'){window.__cmgrMarkImageLoaded?.(this.dataset.cmgrSrc || this.currentSrc || this.src); this.classList.remove('is-pending','is-loading'); this.classList.add('is-loaded')}" onerror="if(this.dataset.fallbackSrc&&!this.dataset.triedFallback){this.dataset.triedFallback='1';this.src=this.dataset.fallbackSrc;}else{this.replaceWith(Object.assign(document.createElement('div'),{className:'cmgr-no-image',textContent:'No Preview'}))}" />`;
 }
 
 function sanitizeDescriptionHtml(html) {
