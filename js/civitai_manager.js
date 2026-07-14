@@ -21,6 +21,8 @@ let navEl = null;
 let pollTimer = null;
 let toastTimer = null;
 let previewObserver = null;
+let previewPrefetchGeneration = 0;
+const previewPrefetchedUrls = new Set();
 let searchRequestSeq = 0;
 let searchAbortController = null;
 let downloadsPollingFast = false;
@@ -548,6 +550,7 @@ async function search(reset = true, options = {}) {
         state.nextCursor = data.metadata?.nextCursor || "";
         state.cursor = state.nextCursor;
         if (data.taxonomy) mergeTaxonomy(state.assetKind, data.taxonomy);
+        schedulePreviewPrefetch(nextItems, { skip: reset ? INITIAL_PREVIEW_LOADS : 0 });
         if (data.warning && !silent && !nextItems.length) {
             state.error = data.warning;
         }
@@ -585,10 +588,55 @@ async function search(reset = true, options = {}) {
 
 function cancelActiveSearch() {
     searchRequestSeq++;
+    previewPrefetchGeneration++;
     searchAbortController?.abort();
     searchAbortController = null;
     state.loadingSearch = false;
     state.autoLoadingMore = false;
+}
+
+function schedulePreviewPrefetch(items, options = {}) {
+    const skip = Math.max(0, Number(options.skip) || 0);
+    const urls = Array.from(new Set((Array.isArray(items) ? items.slice(skip) : [])
+        .map((item) => modelPreviewMedia(item, 450))
+        .filter((media) => media.type === "image" && media.url)
+        .map((media) => media.url)));
+    if (!urls.length) return;
+
+    const generation = previewPrefetchGeneration;
+    const start = () => {
+        if (generation !== previewPrefetchGeneration) return;
+        let cursor = 0;
+        const worker = async () => {
+            while (cursor < urls.length && generation === previewPrefetchGeneration) {
+                const url = urls[cursor++];
+                if (previewPrefetchedUrls.has(url)) continue;
+                previewPrefetchedUrls.add(url);
+                try {
+                    const response = await fetch(url, {
+                        cache: "force-cache",
+                        credentials: "same-origin",
+                    });
+                    if (!response.ok) throw new Error(`Preview prefetch failed: ${response.status}`);
+                    await response.blob();
+                } catch (_) {
+                    previewPrefetchedUrls.delete(url);
+                }
+            }
+        };
+        const concurrency = Math.min(2, urls.length);
+        Promise.allSettled(Array.from({ length: concurrency }, () => worker()));
+    };
+
+    if (typeof window.requestIdleCallback === "function") {
+        window.requestIdleCallback(start, { timeout: 1200 });
+    } else {
+        setTimeout(start, 400);
+    }
+
+    if (previewPrefetchedUrls.size > 2000) {
+        previewPrefetchedUrls.clear();
+    }
 }
 
 function currentSearchSignature() {
