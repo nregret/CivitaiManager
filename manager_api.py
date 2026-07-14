@@ -24,10 +24,30 @@ import folder_paths
 from aiohttp import web
 from server import PromptServer
 
+try:
+    from .backend.client import (
+        http_error_message as _http_error_message,
+        request_headers as _request_headers,
+        validate_civitai_https as _validate_civitai_https,
+    )
+    from .backend.config import normalize_config as _normalize_config_values, parse_bool as _config_bool
+    from .backend.downloads import DownloadJobStore
+    from .backend.library import LibraryIndex
+    from .backend.routes import register_routes
+except ImportError:  # Standalone test loading
+    from backend.client import (
+        http_error_message as _http_error_message,
+        request_headers as _request_headers,
+        validate_civitai_https as _validate_civitai_https,
+    )
+    from backend.config import normalize_config as _normalize_config_values, parse_bool as _config_bool
+    from backend.downloads import DownloadJobStore
+    from backend.library import LibraryIndex
+    from backend.routes import register_routes
+
 
 API_PREFIX = "/civitai-manager/api"
 CIVITAI_API_BASE = "https://civitai.red/api/v1"
-USER_AGENT = "ComfyUI-Civitai-Manager/1.0"
 MODEL_EXTENSIONS = {".ckpt", ".pt", ".pt2", ".bin", ".pth", ".safetensors", ".pkl", ".sft"}
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
 WORKFLOW_EXTENSIONS = {".json"}
@@ -52,21 +72,21 @@ WINDOWS_RESERVED_SEGMENTS = {
     *(f"COM{index}" for index in range(1, 10)),
     *(f"LPT{index}" for index in range(1, 10)),
 }
-CONFIG_MAX_TEXT_LENGTH = 4096
 
 _CONFIG_CACHE: dict[str, Any] | None = None
 _CONFIG_LOCK = threading.Lock()
-_DOWNLOAD_JOBS: dict[str, dict[str, Any]] = {}
-_DOWNLOAD_LOCK = threading.Lock()
 _DOWNLOAD_QUEUE: queue.Queue[tuple[str, str, str, str, dict[str, Any], str]] = queue.Queue(
     maxsize=DOWNLOAD_MAX_ACTIVE_JOBS
 )
 _DOWNLOAD_WORKERS_LOCK = threading.Lock()
 _DOWNLOAD_WORKERS_STARTED = False
+_DOWNLOAD_STORE: DownloadJobStore | None = None
+_DOWNLOAD_STORE_LOCK = threading.Lock()
 _HASH_METADATA_LOCK = threading.Lock()
 _HASH_METADATA_REQUEST_LOCK = asyncio.Lock()
 _TAXONOMY_CACHE: dict[str, dict[str, Any]] = {}
 _TAXONOMY_LOCK = threading.Lock()
+_LIBRARY_INDEX = LibraryIndex(ttl_seconds=30)
 
 
 def _install_windows_proactor_shutdown_guard() -> None:
@@ -130,42 +150,8 @@ def _default_config() -> dict[str, Any]:
     }
 
 
-def _config_bool(value: Any, field: str, default: bool) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int) and value in {0, 1}:
-        return bool(value)
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"true", "1", "yes", "on"}:
-            return True
-        if normalized in {"false", "0", "no", "off"}:
-            return False
-    raise ValueError(f"{field} must be a boolean")
-
-
 def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(_default_config())
-    normalized.update(config)
-    api_key = str(normalized.get("civitai_api_key") or "").strip()
-    if len(api_key) > CONFIG_MAX_TEXT_LENGTH or re.search(r"[\x00-\x1f\x7f]", api_key):
-        raise ValueError("civitai_api_key contains invalid characters or is too long")
-
-    workflow_dir = str(normalized.get("workflow_dir") or "").strip() or _default_workflow_dir()
-    if len(workflow_dir) > CONFIG_MAX_TEXT_LENGTH or "\x00" in workflow_dir:
-        raise ValueError("workflow_dir is invalid or too long")
-    workflow_dir = os.path.abspath(os.path.expanduser(workflow_dir))
-    if os.path.exists(workflow_dir) and not os.path.isdir(workflow_dir):
-        raise ValueError("workflow_dir must be a directory")
-
-    normalized["civitai_api_key"] = api_key
-    normalized["allow_nsfw"] = _config_bool(normalized.get("allow_nsfw"), "allow_nsfw", False)
-    normalized["save_metadata"] = _config_bool(normalized.get("save_metadata"), "save_metadata", True)
-    normalized["save_preview"] = _config_bool(normalized.get("save_preview"), "save_preview", True)
-    normalized["workflow_dir"] = workflow_dir
-    return normalized
+    return _normalize_config_values(config, _default_config())
 
 
 def load_config() -> dict[str, Any]:
@@ -229,30 +215,6 @@ def _public_config(config: dict[str, Any]) -> dict[str, Any]:
     public["api_key_set"] = bool(config.get("civitai_api_key"))
     public["roots"] = _root_display()
     return public
-
-
-def _request_headers(api_key: str | None = None, json_content: bool = True) -> dict[str, str]:
-    headers = {
-        "User-Agent": USER_AGENT,
-        "Accept": "application/json" if json_content else "*/*",
-    }
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    return headers
-
-
-def _http_error_message(body: str, fallback: str) -> str:
-    if body:
-        try:
-            data = json.loads(body)
-            if isinstance(data, dict):
-                for key in ("error", "message", "detail"):
-                    value = data.get(key)
-                    if value:
-                        return str(value)
-        except Exception:
-            pass
-    return fallback
 
 
 def _read_json_url(url: str, api_key: str | None = None, timeout: int = 30, quiet: bool = False) -> dict[str, Any] | None:
@@ -1056,59 +1018,26 @@ def _append_api_key_to_download(url: str, api_key: str | None) -> str:
     return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query, doseq=True)))
 
 
-def _validate_civitai_https(url: str) -> bool:
-    try:
-        parsed = urllib.parse.urlparse(url)
-    except Exception:
-        return False
-    host = parsed.netloc.lower()
-    return parsed.scheme == "https" and (
-        host == "civitai.com"
-        or host == "www.civitai.com"
-        or host == "civitai.red"
-        or host.endswith(".civitai.red")
-        or host.endswith(".civitai.com")
-    )
+class DownloadCancelled(Exception):
+    pass
 
 
-def _download_job_finished_at(job: dict[str, Any]) -> int:
-    return int(job.get("completed_at") or job.get("failed_at") or job.get("created_at") or 0)
+class DownloadQueueFull(Exception):
+    pass
 
 
-def _prune_download_jobs_locked(now: int | None = None) -> None:
-    """Prune finished download history. Caller must hold _DOWNLOAD_LOCK."""
-    current_time = _now() if now is None else int(now)
-    finished = [
-        (task_id, job)
-        for task_id, job in _DOWNLOAD_JOBS.items()
-        if job.get("status") in {"completed", "failed"}
-    ]
-
-    for task_id, job in finished:
-        finished_at = _download_job_finished_at(job)
-        if finished_at and current_time - finished_at > DOWNLOAD_JOB_RETENTION_SECONDS:
-            _DOWNLOAD_JOBS.pop(task_id, None)
-
-    retained = sorted(
-        (
-            (task_id, job)
-            for task_id, job in _DOWNLOAD_JOBS.items()
-            if job.get("status") in {"completed", "failed"}
-        ),
-        key=lambda item: _download_job_finished_at(item[1]),
-        reverse=True,
-    )
-    for task_id, _ in retained[DOWNLOAD_JOB_HISTORY_LIMIT:]:
-        _DOWNLOAD_JOBS.pop(task_id, None)
-
-
-def _active_download_job_count_locked() -> int:
-    """Count queued and running jobs. Caller must hold _DOWNLOAD_LOCK."""
-    return sum(
-        1
-        for job in _DOWNLOAD_JOBS.values()
-        if job.get("status") in {"pending", "downloading"}
-    )
+def _download_store() -> DownloadJobStore:
+    global _DOWNLOAD_STORE
+    if _DOWNLOAD_STORE is not None:
+        return _DOWNLOAD_STORE
+    with _DOWNLOAD_STORE_LOCK:
+        if _DOWNLOAD_STORE is None:
+            _DOWNLOAD_STORE = DownloadJobStore(
+                os.path.join(_plugin_data_dir(), "downloads.json"),
+                history_limit=DOWNLOAD_JOB_HISTORY_LIMIT,
+                retention_seconds=DOWNLOAD_JOB_RETENTION_SECONDS,
+            )
+        return _DOWNLOAD_STORE
 
 
 def _download_queue_worker() -> None:
@@ -1146,37 +1075,51 @@ def _download_worker(
     preview_url: str,
 ) -> None:
     temp_path = f"{target_path}.download"
+    store = _download_store()
+    cancel_event = store.cancel_event(task_id)
     config = load_config()
     api_key = str(config.get("civitai_api_key") or "").strip() or None
     request_url = _append_api_key_to_download(download_url, api_key)
+    total = 0
+    progress = 0
 
     try:
+        if cancel_event.is_set():
+            raise DownloadCancelled()
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
         req = urllib.request.Request(request_url, headers=_request_headers(api_key, json_content=False))
         with urllib.request.urlopen(req, timeout=60) as resp, open(temp_path, "wb") as handle:
             total = int(resp.headers.get("Content-Length") or 0)
-            with _DOWNLOAD_LOCK:
-                _DOWNLOAD_JOBS[task_id]["status"] = "downloading"
-                _DOWNLOAD_JOBS[task_id]["total"] = total
-            progress = 0
+            store.update(task_id, status="downloading", total=total, error="")
             while True:
+                if cancel_event.is_set():
+                    raise DownloadCancelled()
                 chunk = resp.read(1024 * 1024)
                 if not chunk:
                     break
                 handle.write(chunk)
                 progress += len(chunk)
-                with _DOWNLOAD_LOCK:
-                    _DOWNLOAD_JOBS[task_id]["progress"] = progress
+                store.update(task_id, persist=False, progress=progress)
 
+        if cancel_event.is_set():
+            raise DownloadCancelled()
         final_path = _unique_path(target_path)
         os.replace(temp_path, final_path)
         metadata["saved_path"] = final_path
         metadata["saved_filename"] = os.path.basename(final_path)
 
         if config.get("save_metadata", True):
-            metadata_path = _companion_metadata_path(final_path, root_kind)
-            with open(metadata_path, "w", encoding="utf-8") as handle:
-                json.dump(metadata, handle, indent=2, ensure_ascii=False)
+            _write_asset_metadata(final_path, root_kind, metadata)
+
+        store.update(
+            task_id,
+            status="completed",
+            progress=total or progress or os.path.getsize(final_path),
+            target_path=final_path,
+            relative_path=os.path.relpath(final_path, _root_for_kind(root_kind)).replace("\\", "/"),
+            completed_at=_now(),
+        )
+        _LIBRARY_INDEX.invalidate()
 
         if config.get("save_preview", True) and preview_url:
             try:
@@ -1184,27 +1127,21 @@ def _download_worker(
                 _download_binary(preview_url, preview_path, api_key=None, timeout=30)
             except Exception as exc:
                 print(f"[Civitai Manager] Preview download failed: {exc}")
-
-        with _DOWNLOAD_LOCK:
-            job = _DOWNLOAD_JOBS[task_id]
-            job["status"] = "completed"
-            job["progress"] = job.get("total") or job.get("progress") or os.path.getsize(final_path)
-            job["target_path"] = final_path
-            job["relative_path"] = os.path.relpath(final_path, _root_for_kind(root_kind)).replace("\\", "/")
-            job["completed_at"] = _now()
+    except DownloadCancelled:
+        store.update(task_id, status="cancelled", error="", cancelled_at=_now())
     except urllib.error.HTTPError as exc:
-        error = f"HTTP {exc.code}: {exc.reason}"
-        if exc.code in (401, 403):
-            error = "Civitai refused the download. Configure a valid API Key in Settings."
-        with _DOWNLOAD_LOCK:
-            _DOWNLOAD_JOBS[task_id]["status"] = "failed"
-            _DOWNLOAD_JOBS[task_id]["error"] = error
-            _DOWNLOAD_JOBS[task_id]["failed_at"] = _now()
+        if cancel_event.is_set():
+            store.update(task_id, status="cancelled", error="", cancelled_at=_now())
+        else:
+            error = f"HTTP {exc.code}: {exc.reason}"
+            if exc.code in (401, 403):
+                error = "Civitai refused the download. Configure a valid API Key in Settings."
+            store.update(task_id, status="failed", error=error, failed_at=_now())
     except Exception as exc:
-        with _DOWNLOAD_LOCK:
-            _DOWNLOAD_JOBS[task_id]["status"] = "failed"
-            _DOWNLOAD_JOBS[task_id]["error"] = str(exc)
-            _DOWNLOAD_JOBS[task_id]["failed_at"] = _now()
+        if cancel_event.is_set():
+            store.update(task_id, status="cancelled", error="", cancelled_at=_now())
+        else:
+            store.update(task_id, status="failed", error=str(exc), failed_at=_now())
     finally:
         if os.path.exists(temp_path):
             try:
@@ -1221,12 +1158,16 @@ def _download_binary(url: str, target_path: str, api_key: str | None = None, tim
             shutil.copyfileobj(resp, handle)
 
 
-def _scan_roots() -> dict[str, Any]:
+def _build_library_snapshot() -> dict[str, Any]:
     return {
         "roots": _root_display(),
         "items": _scan_all_library_items(),
         "generated_at": _now(),
     }
+
+
+def _scan_roots(force: bool = False) -> dict[str, Any]:
+    return _LIBRARY_INDEX.get(_build_library_snapshot, force=force)
 
 
 def _metadata_for_asset(abs_path: str, root_kind: str) -> tuple[str, dict[str, Any]]:
@@ -1827,59 +1768,68 @@ async def resolve_path_api(request: web.Request) -> web.Response:
         return web.json_response({"success": False, "error": str(exc)}, status=500)
 
 
+def _enqueue_download_request(body: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    model = body.get("model") if isinstance(body.get("model"), dict) else {}
+    version = body.get("version") if isinstance(body.get("version"), dict) else {}
+    file_info = body.get("file") if isinstance(body.get("file"), dict) else {}
+    requested_kind = str(body.get("kind") or "")
+    overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
+    resolution = resolve_download_path(model, version, file_info, requested_kind, overrides)
+    download_url = str(body.get("download_url") or resolution.get("download_url") or "")
+    if not download_url or not _validate_civitai_https(download_url):
+        raise ValueError("Only Civitai HTTPS downloads are supported")
+
+    store = _download_store()
+    _ensure_download_workers()
+    task_id = str(uuid.uuid4())
+    metadata = _metadata_payload(model, version, file_info, resolution)
+    preview_url = _first_preview_url(version, model)
+    retry_payload = {
+        "kind": requested_kind,
+        "model": model,
+        "version": version,
+        "file": file_info,
+        "overrides": overrides,
+        "download_url": download_url,
+    }
+    added = store.add_if_capacity({
+        "id": task_id,
+        "status": "pending",
+        "progress": 0,
+        "total": 0,
+        "error": "",
+        "root_kind": resolution["root_kind"],
+        "target_path": resolution["absolute_path"],
+        "relative_path": resolution["relative_path"],
+        "filename": resolution["filename"],
+        "created_at": _now(),
+    }, retry_payload, DOWNLOAD_MAX_ACTIVE_JOBS)
+    if not added:
+        raise DownloadQueueFull(f"Download queue is full ({DOWNLOAD_MAX_ACTIVE_JOBS} active jobs)")
+    try:
+        _DOWNLOAD_QUEUE.put_nowait((
+            task_id,
+            download_url,
+            resolution["absolute_path"],
+            resolution["root_kind"],
+            metadata,
+            preview_url,
+        ))
+    except queue.Full as exc:
+        store.remove(task_id)
+        raise DownloadQueueFull("Download queue is full") from exc
+    return task_id, resolution
+
+
 async def download_api(request: web.Request) -> web.Response:
     try:
         body = await request.json()
-        model = body.get("model") if isinstance(body.get("model"), dict) else {}
-        version = body.get("version") if isinstance(body.get("version"), dict) else {}
-        file_info = body.get("file") if isinstance(body.get("file"), dict) else {}
-        requested_kind = str(body.get("kind") or "")
-        overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
-        resolution = resolve_download_path(model, version, file_info, requested_kind, overrides)
-        download_url = str(body.get("download_url") or resolution.get("download_url") or "")
-        if not download_url or not _validate_civitai_https(download_url):
-            return web.json_response({"success": False, "error": "Only Civitai HTTPS downloads are supported"}, status=400)
-
-        _ensure_download_workers()
-        task_id = str(uuid.uuid4())
-        metadata = _metadata_payload(model, version, file_info, resolution)
-        preview_url = _first_preview_url(version, model)
-        with _DOWNLOAD_LOCK:
-            _prune_download_jobs_locked()
-            if _active_download_job_count_locked() >= DOWNLOAD_MAX_ACTIVE_JOBS:
-                return web.json_response({
-                    "success": False,
-                    "error": f"Download queue is full ({DOWNLOAD_MAX_ACTIVE_JOBS} active jobs)",
-                }, status=429)
-            _DOWNLOAD_JOBS[task_id] = {
-                "id": task_id,
-                "status": "pending",
-                "progress": 0,
-                "total": 0,
-                "error": "",
-                "root_kind": resolution["root_kind"],
-                "target_path": resolution["absolute_path"],
-                "relative_path": resolution["relative_path"],
-                "filename": resolution["filename"],
-                "created_at": _now(),
-            }
-        try:
-            _DOWNLOAD_QUEUE.put_nowait((
-                task_id,
-                download_url,
-                resolution["absolute_path"],
-                resolution["root_kind"],
-                metadata,
-                preview_url,
-            ))
-        except queue.Full:
-            with _DOWNLOAD_LOCK:
-                _DOWNLOAD_JOBS.pop(task_id, None)
-            return web.json_response({
-                "success": False,
-                "error": "Download queue is full",
-            }, status=429)
+        if not isinstance(body, dict):
+            raise ValueError("Download payload must be an object")
+        task_id, resolution = _enqueue_download_request(body)
         return web.json_response({"success": True, "task_id": task_id, "resolution": resolution})
+    except DownloadQueueFull as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=429)
     except ValueError as exc:
         return web.json_response({"success": False, "error": str(exc)}, status=400)
     except Exception as exc:
@@ -1888,17 +1838,53 @@ async def download_api(request: web.Request) -> web.Response:
 
 async def download_status_api(request: web.Request) -> web.Response:
     task_id = request.query.get("task_id", "")
-    with _DOWNLOAD_LOCK:
-        _prune_download_jobs_locked()
-        if task_id:
-            job = _DOWNLOAD_JOBS.get(task_id)
-            return web.json_response(dict(job) if job else {"status": "not_found"})
-        return web.json_response({job_id: dict(job) for job_id, job in _DOWNLOAD_JOBS.items()})
+    return web.json_response(_download_store().snapshot(task_id))
+
+
+async def cancel_download_api(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+        task_id = str(body.get("task_id") or "") if isinstance(body, dict) else ""
+        if not task_id:
+            raise ValueError("Missing task_id")
+        job = _download_store().request_cancel(task_id)
+        if not job:
+            return web.json_response({"success": False, "error": "Download is not active"}, status=409)
+        return web.json_response({"success": True, "job": job})
+    except ValueError as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=500)
+
+
+async def retry_download_api(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+        task_id = str(body.get("task_id") or "") if isinstance(body, dict) else ""
+        if not task_id:
+            raise ValueError("Missing task_id")
+        payload = _download_store().retry_payload(task_id)
+        if not payload:
+            return web.json_response({"success": False, "error": "Download is not retryable"}, status=409)
+        new_task_id, resolution = _enqueue_download_request(payload)
+        return web.json_response({
+            "success": True,
+            "task_id": new_task_id,
+            "retry_of": task_id,
+            "resolution": resolution,
+        })
+    except DownloadQueueFull as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=429)
+    except ValueError as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=500)
 
 
 async def library_api(request: web.Request) -> web.Response:
     try:
-        data = await asyncio.to_thread(_scan_roots)
+        force = request.query.get("force", "").lower() in {"1", "true", "yes"}
+        data = await asyncio.to_thread(_scan_roots, force)
         return web.json_response(data)
     except Exception as exc:
         return web.json_response({"roots": _root_display(), "items": [], "error": str(exc)}, status=500)
@@ -2004,6 +1990,7 @@ async def delete_asset_api(request: web.Request) -> web.Response:
             return web.json_response({"success": False, "error": "Asset not found"}, status=404)
         os.remove(abs_path)
         _delete_companions(abs_path, root_kind)
+        _LIBRARY_INDEX.invalidate()
         return web.json_response({"success": True})
     except ValueError as exc:
         return web.json_response({"success": False, "error": str(exc)}, status=400)
@@ -2041,6 +2028,7 @@ async def move_asset_api(request: web.Request) -> web.Response:
             category_dir,
             filename,
         )
+        _LIBRARY_INDEX.invalidate()
         return web.json_response({
             "success": True,
             "relative_path": relative_path,
@@ -2077,6 +2065,7 @@ async def favorite_asset_api(request: web.Request) -> web.Response:
         metadata["favorite"] = favorite
         metadata["favorite_updated_at"] = _now()
         _write_asset_metadata(abs_path, root_kind, metadata)
+        _LIBRARY_INDEX.invalidate()
         return web.json_response({"success": True, "favorite": favorite})
     except ValueError as exc:
         return web.json_response({"success": False, "error": str(exc)}, status=400)
@@ -2120,6 +2109,7 @@ async def enrich_metadata_api(request: web.Request) -> web.Response:
             return web.json_response({"success": False, "error": "Asset not found"}, status=404)
         async with _HASH_METADATA_REQUEST_LOCK:
             result = await asyncio.to_thread(_enrich_metadata_worker, abs_path, root_kind)
+        _LIBRARY_INDEX.invalidate()
         return web.json_response({"success": True, **result})
     except ValueError as exc:
         return web.json_response({"success": False, "error": str(exc)}, status=400)
@@ -2128,21 +2118,4 @@ async def enrich_metadata_api(request: web.Request) -> web.Response:
 
 
 routes = PromptServer.instance.routes
-routes.get(f"{API_PREFIX}/config")(get_config_api)
-routes.post(f"{API_PREFIX}/config")(save_config_api)
-routes.get(f"{API_PREFIX}/roots")(roots_api)
-routes.get(f"{API_PREFIX}/taxonomy")(taxonomy_api)
-routes.get(f"{API_PREFIX}/search")(search_api)
-routes.get(f"{API_PREFIX}/test-api")(test_api_api)
-routes.get(f"{API_PREFIX}/model-detail")(model_detail_api)
-routes.post(f"{API_PREFIX}/resolve-path")(resolve_path_api)
-routes.post(f"{API_PREFIX}/download")(download_api)
-routes.get(f"{API_PREFIX}/download-status")(download_status_api)
-routes.get(f"{API_PREFIX}/library")(library_api)
-routes.get(f"{API_PREFIX}/local-preview")(local_preview_api)
-routes.get(f"{API_PREFIX}/image")(image_proxy_api)
-routes.post(f"{API_PREFIX}/asset/delete")(delete_asset_api)
-routes.post(f"{API_PREFIX}/asset/move")(move_asset_api)
-routes.post(f"{API_PREFIX}/asset/favorite")(favorite_asset_api)
-routes.post(f"{API_PREFIX}/asset/open-folder")(open_folder_api)
-routes.post(f"{API_PREFIX}/asset/metadata")(enrich_metadata_api)
+register_routes(routes, API_PREFIX, globals())

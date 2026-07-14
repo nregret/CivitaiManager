@@ -1,0 +1,12 @@
+[project]
+name = "comfyui-civitai-manager"
+version = "1.0.0"
+description = "Browse, download, and organize Civitai assets inside ComfyUI."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.comfy]
+PublisherId = "yunlong"
+DisplayName = "ComfyUI Civitai Manager"
+Icon = ""

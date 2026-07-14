@@ -6,6 +6,7 @@
 
 - Discover：搜索和筛选 Civitai 模型，查看版本、文件、预览与触发词。
 - Downloads：按照基础模型和分类自动生成保存路径，并保存元数据与预览图。
+- Downloads 支持取消和重试；历史写入用户目录，ComfyUI 重启后仍可查看。
 - Library：扫描本地模型库，支持移动、重命名、收藏、删除和通过 SHA256 补全元数据。
 - Settings：配置 API Key、NSFW、Workflow 目录和伴随文件保存选项。
 
@@ -21,9 +22,18 @@
 civitaimanager/
 ├── __init__.py                 # ComfyUI 扩展入口与 Web 目录声明
 ├── nodes.py                    # 导入后端并注册 API；不注册工作流节点
-├── manager_api.py              # Civitai 客户端、下载、本地库和 HTTP 路由
+├── manager_api.py              # 后端编排与 API handler
+├── backend/
+│   ├── client.py               # Civitai 请求辅助
+│   ├── config.py               # 配置校验
+│   ├── downloads.py            # 持久化下载任务存储
+│   ├── library.py              # Library 索引缓存
+│   └── routes.py               # HTTP 路由表
 ├── js/
-│   └── civitai_manager.js      # UI、状态、API 客户端和样式
+│   ├── civitai_manager.js      # UI 编排与交互
+│   └── civitai/                # 常量、状态、API、样式、i18n
+├── locales/{en,zh}/            # ComfyUI 官方 locale 资源
+├── pyproject.toml              # Comfy Registry 发布元数据
 └── tests/
     └── test_manager_api.py     # 后端核心逻辑回归测试
 ```
@@ -40,7 +50,9 @@ ComfyUI Browser UI
         └── Local Library：扫描并管理模型和 companion 文件
 ```
 
-下载任务在内存中管理：最多保留 100 条已结束记录，结束 24 小时后自动清理。ComfyUI 重启后任务历史不会恢复。
+下载任务写入 ComfyUI 用户目录的 `civitai_manager/downloads.json`：最多保留 100 条已结束记录，结束 24 小时后自动清理。重启时仍处于队列或下载中的任务会标记为失败，并可从界面重试。
+
+Library 扫描结果默认缓存 30 秒；下载完成或本地资产发生移动、删除、收藏、元数据更新时自动失效，也可以点击 Refresh 强制重建。
 
 ## 数据安全约束
 
@@ -56,14 +68,14 @@ ComfyUI Browser UI
 
 ```powershell
 python -m unittest discover -s tests -v
-python -c "import ast,pathlib; [ast.parse(pathlib.Path(p).read_text(encoding='utf-8'), filename=p) for p in ['__init__.py','nodes.py','manager_api.py']]"
-node --check js\civitai_manager.js
+python -c "import ast,pathlib; files=list(pathlib.Path('.').glob('*.py'))+list(pathlib.Path('backend').glob('*.py')); [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for p in files]"
+Get-ChildItem js -Recurse -Filter *.js | ForEach-Object { node --check $_.FullName }
 ```
 
 单元测试使用临时目录和 ComfyUI 模块替身，不访问网络，也不会修改真实模型目录。覆盖路径逃逸、配置校验、搜索回退、下载状态、Library 扫描、资源移动/删除、companion 文件和元数据补全。
 
 ## 当前工程边界
 
-- 下载任务、搜索分类缓存和配置缓存都属于单个 ComfyUI 进程。
-- Library 当前按请求扫描模型目录，大型模型库后续应增加索引缓存。
+- 搜索分类缓存和配置缓存属于单个 ComfyUI 进程。
+- 取消下载在网络读取边界生效；底层阻塞读取可能需要等待当前读取或超时返回。
 - 远程媒体代理保持兼容模式，可转发模型数据中提供的 HTTP/HTTPS 预览地址。

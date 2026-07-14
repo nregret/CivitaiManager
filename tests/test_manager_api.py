@@ -257,6 +257,27 @@ class LibraryScanTests(unittest.TestCase):
         self.assertEqual(items[0]["name"], "Flow")
 
 
+class LibraryIndexTests(unittest.TestCase):
+    def test_cache_reuses_snapshot_until_forced_or_invalidated(self):
+        index = manager.LibraryIndex(ttl_seconds=60)
+        calls = []
+
+        def load():
+            calls.append(len(calls) + 1)
+            return {"items": [{"generation": calls[-1]}]}
+
+        first = index.get(load)
+        second = index.get(load)
+        forced = index.get(load, force=True)
+        index.invalidate()
+        invalidated = index.get(load)
+
+        self.assertEqual(first, second)
+        self.assertEqual(forced["items"][0]["generation"], 2)
+        self.assertEqual(invalidated["items"][0]["generation"], 3)
+        self.assertEqual(len(calls), 3)
+
+
 class ConfigApiAsyncTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.original_cache = manager._CONFIG_CACHE
@@ -282,48 +303,103 @@ class ConfigApiAsyncTests(unittest.IsolatedAsyncioTestCase):
 
 class DownloadJobTests(unittest.TestCase):
     def setUp(self):
-        self.original_jobs = manager._DOWNLOAD_JOBS
-        manager._DOWNLOAD_JOBS = {}
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.store_path = str(Path(self.temp_dir.name) / "downloads.json")
 
     def tearDown(self):
-        manager._DOWNLOAD_JOBS = self.original_jobs
+        self.temp_dir.cleanup()
+
+    def make_store(self, history_limit=100, retention_seconds=24 * 60 * 60):
+        return manager.DownloadJobStore(
+            self.store_path,
+            history_limit=history_limit,
+            retention_seconds=retention_seconds,
+        )
 
     def test_active_count_only_includes_pending_and_downloading(self):
-        manager._DOWNLOAD_JOBS.update({
-            "pending": {"status": "pending"},
-            "running": {"status": "downloading"},
-            "done": {"status": "completed"},
-            "failed": {"status": "failed"},
-        })
-        with manager._DOWNLOAD_LOCK:
-            self.assertEqual(manager._active_download_job_count_locked(), 2)
+        store = self.make_store()
+        for task_id, status in {
+            "pending": "pending",
+            "running": "downloading",
+            "done": "completed",
+            "failed": "failed",
+        }.items():
+            store.add({"id": task_id, "status": status, "created_at": 1}, {})
+        self.assertEqual(store.active_count(), 2)
 
     def test_prune_expires_old_jobs_and_caps_finished_history(self):
-        now = 10_000
-        manager._DOWNLOAD_JOBS.update({
-            "active": {"status": "pending", "created_at": 1},
-            "expired": {"status": "completed", "completed_at": 100},
-            "newest": {"status": "completed", "completed_at": 9_900},
-            "middle": {"status": "failed", "failed_at": 9_800},
-            "oldest-retained": {"status": "completed", "completed_at": 9_700},
-        })
-        with (
-            mock.patch.object(manager, "DOWNLOAD_JOB_RETENTION_SECONDS", 1_000),
-            mock.patch.object(manager, "DOWNLOAD_JOB_HISTORY_LIMIT", 2),
-            manager._DOWNLOAD_LOCK,
-        ):
-            manager._prune_download_jobs_locked(now)
+        store = self.make_store(history_limit=2, retention_seconds=1_000)
+        now = int(time.time())
+        store.add({"id": "active", "status": "pending", "created_at": now}, {})
+        for task_id, status, finished_at in [
+            ("expired", "completed", now - 2_000),
+            ("newest", "completed", now - 10),
+            ("middle", "failed", now - 20),
+            ("oldest-retained", "completed", now - 30),
+        ]:
+            store.add({"id": task_id, "status": status, "created_at": now}, {})
+            field = "failed_at" if status == "failed" else "completed_at"
+            store.update(task_id, **{field: finished_at})
 
-        self.assertEqual(set(manager._DOWNLOAD_JOBS), {"active", "newest", "middle"})
+        self.assertEqual(set(store.snapshot()), {"active", "newest", "middle"})
+
+    def test_restart_marks_active_jobs_failed_and_preserves_retry_payload(self):
+        store = self.make_store()
+        store.add(
+            {"id": "active", "status": "downloading", "created_at": int(time.time())},
+            {"kind": "lora", "download_url": "https://civitai.com/api/download/1"},
+        )
+
+        restored = self.make_store()
+
+        self.assertEqual(restored.snapshot("active")["status"], "failed")
+        self.assertIn("restart", restored.snapshot("active")["error"])
+        self.assertEqual(restored.retry_payload("active")["kind"], "lora")
+        self.assertNotIn("retry_payload", restored.snapshot("active"))
+
+    def test_cancel_event_and_status_are_recorded(self):
+        store = self.make_store()
+        store.add({"id": "active", "status": "pending", "created_at": int(time.time())}, {})
+
+        job = store.request_cancel("active")
+
+        self.assertEqual(job["status"], "cancelling")
+        self.assertTrue(store.cancel_event("active").is_set())
+
+    def test_capacity_check_and_add_are_one_operation(self):
+        store = self.make_store()
+        now = int(time.time())
+
+        first = store.add_if_capacity({"id": "first", "status": "pending", "created_at": now}, {}, 1)
+        second = store.add_if_capacity({"id": "second", "status": "pending", "created_at": now}, {}, 1)
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(set(store.snapshot()), {"first"})
+
+    def test_completed_job_cannot_be_retried(self):
+        store = self.make_store()
+        store.add(
+            {"id": "completed", "status": "completed", "created_at": int(time.time())},
+            {"kind": "lora"},
+        )
+
+        self.assertIsNone(store.retry_payload("completed"))
 
 
 class DownloadApiAsyncTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.original_jobs = manager._DOWNLOAD_JOBS
-        manager._DOWNLOAD_JOBS = {}
+        self.original_store = manager._DOWNLOAD_STORE
+        self.temp_dir = tempfile.TemporaryDirectory()
+        manager._DOWNLOAD_STORE = manager.DownloadJobStore(
+            str(Path(self.temp_dir.name) / "downloads.json"),
+            history_limit=100,
+            retention_seconds=24 * 60 * 60,
+        )
 
     async def asyncTearDown(self):
-        manager._DOWNLOAD_JOBS = self.original_jobs
+        manager._DOWNLOAD_STORE = self.original_store
+        self.temp_dir.cleanup()
 
     async def test_rejects_when_active_job_limit_is_reached(self):
         class Request:
@@ -331,10 +407,11 @@ class DownloadApiAsyncTests(unittest.IsolatedAsyncioTestCase):
                 return {}
 
         for index in range(manager.DOWNLOAD_MAX_ACTIVE_JOBS):
-            manager._DOWNLOAD_JOBS[str(index)] = {
+            manager._DOWNLOAD_STORE.add({
+                "id": str(index),
                 "status": "pending",
-                "created_at": index + 1,
-            }
+                "created_at": int(time.time()),
+            }, {})
         resolution = {
             "root_kind": "loras",
             "absolute_path": "model.safetensors",
@@ -351,21 +428,50 @@ class DownloadApiAsyncTests(unittest.IsolatedAsyncioTestCase):
             response = await manager.download_api(Request())
 
         self.assertEqual(response.status, 429)
-        self.assertEqual(len(manager._DOWNLOAD_JOBS), manager.DOWNLOAD_MAX_ACTIVE_JOBS)
+        self.assertEqual(len(manager._DOWNLOAD_STORE.snapshot()), manager.DOWNLOAD_MAX_ACTIVE_JOBS)
 
     async def test_status_endpoint_prunes_expired_history(self):
-        manager._DOWNLOAD_JOBS.update({
-            "active": {"id": "active", "status": "downloading", "created_at": 1},
-            "expired": {"id": "expired", "status": "completed", "completed_at": 1},
-        })
-        with (
-            mock.patch.object(manager, "_now", return_value=10_000),
-            mock.patch.object(manager, "DOWNLOAD_JOB_RETENTION_SECONDS", 100),
-        ):
-            response = await manager.download_status_api(_QueryRequest())
+        manager._DOWNLOAD_STORE.retention_seconds = 100
+        now = int(time.time())
+        manager._DOWNLOAD_STORE.add({"id": "active", "status": "downloading", "created_at": now}, {})
+        manager._DOWNLOAD_STORE.add({"id": "expired", "status": "completed", "created_at": now}, {})
+        manager._DOWNLOAD_STORE.update("expired", completed_at=1)
+
+        response = await manager.download_status_api(_QueryRequest())
 
         self.assertEqual(response.status, 200)
         self.assertEqual(set(response.body), {"active"})
+
+    async def test_cancel_endpoint_marks_active_job_cancelling(self):
+        manager._DOWNLOAD_STORE.add({
+            "id": "active",
+            "status": "pending",
+            "created_at": int(time.time()),
+        }, {})
+
+        response = await manager.cancel_download_api(_JsonRequest({"task_id": "active"}))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.body["job"]["status"], "cancelling")
+
+    async def test_retry_endpoint_queues_saved_payload(self):
+        payload = {"kind": "lora", "download_url": "https://civitai.com/api/download/1"}
+        manager._DOWNLOAD_STORE.add({
+            "id": "failed",
+            "status": "failed",
+            "created_at": int(time.time()),
+            "failed_at": int(time.time()),
+        }, payload)
+        with mock.patch.object(
+            manager,
+            "_enqueue_download_request",
+            return_value=("new-task", {"filename": "model.safetensors"}),
+        ) as enqueue:
+            response = await manager.retry_download_api(_JsonRequest({"task_id": "failed"}))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.body["retry_of"], "failed")
+        enqueue.assert_called_once_with(payload)
 
 
 class AssetApiAsyncTests(unittest.IsolatedAsyncioTestCase):
