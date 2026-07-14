@@ -2001,6 +2001,95 @@ export function injectStyles() {
             overflow: hidden;
             text-overflow: ellipsis;
         }
+        .cmgr-skeleton-card,
+        .cmgr-skeleton-card:hover {
+            cursor: progress;
+            pointer-events: none;
+            background: var(--cmgr-panel-soft);
+            border-color: var(--cmgr-border);
+            box-shadow: none;
+        }
+        .cmgr-skeleton-card::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            z-index: 8;
+            pointer-events: none;
+            background: linear-gradient(
+                105deg,
+                transparent 24%,
+                color-mix(in srgb, var(--cmgr-text) 11%, transparent) 43%,
+                transparent 62%
+            );
+            transform: translateX(-115%);
+            animation: cmgrSkeletonShimmer 1.35s ease-in-out infinite;
+        }
+        .cmgr-skeleton-media {
+            position: absolute;
+            inset: 2px;
+            z-index: 0;
+            border-radius: calc(var(--cmgr-radius) - 2px);
+            background: color-mix(in srgb, var(--cmgr-panel-soft) 90%, var(--cmgr-text) 10%);
+        }
+        .cmgr-skeleton-badge,
+        .cmgr-skeleton-line,
+        .cmgr-skeleton-stats span {
+            background: color-mix(in srgb, var(--cmgr-panel-soft) 74%, var(--cmgr-text) 26%);
+        }
+        .cmgr-skeleton-badge {
+            position: absolute;
+            top: 11px;
+            left: 11px;
+            z-index: 2;
+            width: 34%;
+            height: 22px;
+            border-radius: 999px;
+        }
+        .cmgr-skeleton-content {
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 2;
+            display: grid;
+            gap: 10px;
+            padding: 48px 12px 13px;
+            background: linear-gradient(to top, color-mix(in srgb, var(--cmgr-panel) 94%, transparent), transparent);
+        }
+        .cmgr-skeleton-line {
+            width: 82%;
+            height: 13px;
+            border-radius: 999px;
+        }
+        .cmgr-skeleton-line.is-medium {
+            width: 68%;
+        }
+        .cmgr-skeleton-line.is-short {
+            width: 54%;
+        }
+        .cmgr-skeleton-stats {
+            display: flex;
+            gap: 7px;
+        }
+        .cmgr-skeleton-stats span {
+            width: 52px;
+            height: 19px;
+            border-radius: 999px;
+        }
+        .cmgr-skeleton-stats span:last-child {
+            width: 44px;
+        }
+        @keyframes cmgrSkeletonShimmer {
+            0% { transform: translateX(-115%); }
+            65%, 100% { transform: translateX(115%); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .cmgr-skeleton-card::after {
+                animation: none;
+                transform: none;
+                opacity: 0.45;
+            }
+        }
         .cmgr-card-meta,
         .cmgr-card-tags {
             color: color-mix(in srgb, var(--cmgr-text) 78%, transparent);

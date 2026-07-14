@@ -1627,8 +1627,28 @@ function renderDiscover() {
 }
 
 function renderEmptySearch() {
-    if (state.loadingSearch) return `<div class="cmgr-empty">${escapeHtml(t("Searching Civitai..."))}</div>`;
+    if (state.loadingSearch) return renderSearchSkeletons();
     return `<div class="cmgr-empty">${escapeHtml(t("Search {kind} from Civitai.", { kind: assetKindLabel(state.assetKind) }))}</div>`;
+}
+
+function renderSearchSkeletons(count = 12) {
+    return Array.from({ length: count }, (_, index) => `
+        <article
+            class="cmgr-card cmgr-skeleton-card"
+            ${index === 0 ? `role="status" aria-label="${escapeAttr(t("Searching Civitai..."))}"` : 'aria-hidden="true"'}
+        >
+            <div class="cmgr-card-spacer" aria-hidden="true"></div>
+            <div class="cmgr-skeleton-media"></div>
+            <div class="cmgr-skeleton-badge"></div>
+            <div class="cmgr-skeleton-content">
+                <div class="cmgr-skeleton-line cmgr-skeleton-title ${index % 3 === 1 ? "is-medium" : index % 3 === 2 ? "is-short" : ""}"></div>
+                <div class="cmgr-skeleton-stats">
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+        </article>
+    `).join("");
 }
 
 function renderModelCard(model, index = 0) {
