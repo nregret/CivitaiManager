@@ -999,7 +999,7 @@ export function injectStyles() {
             padding: 24px;
             gap: 18px;
             grid-template-columns: repeat(4, minmax(0, 1fr));
-            grid-auto-rows: auto !important;
+            grid-auto-rows: max-content !important;
             justify-content: stretch;
             align-content: start;
             align-items: start;
@@ -1878,7 +1878,7 @@ export function injectStyles() {
             display: block;
             width: 100%;
             height: auto !important;
-            min-height: 0;
+            min-height: auto;
             aspect-ratio: 2 / 3 !important;
             align-self: start;
             overflow: hidden;
@@ -2571,7 +2571,7 @@ export function injectStyles() {
             .cmgr-card.asset {
                 width: 100%;
                 height: auto !important;
-                min-height: 0;
+                min-height: auto;
                 aspect-ratio: 2 / 3 !important;
             }
             .cmgr-card::before {
