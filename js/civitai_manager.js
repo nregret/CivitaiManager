@@ -25,6 +25,7 @@ let searchRequestSeq = 0;
 let downloadsPollingFast = false;
 let themeObserver = null;
 let themeSyncQueued = false;
+let themeColorProbe = null;
 let responsiveSearchTimer = null;
 let pendingResponsiveSearch = false;
 let lastResponsiveSearchKey = "";
@@ -107,6 +108,40 @@ function readCssColor(style, names) {
         if (isUsefulThemeColor(value)) return value;
     }
     return "";
+}
+
+function resolveThemeRgb(value) {
+    if (!isUsefulThemeColor(value)) return null;
+    if (!themeColorProbe) {
+        themeColorProbe = document.createElement("span");
+        themeColorProbe.setAttribute("aria-hidden", "true");
+        themeColorProbe.style.cssText = "position:fixed;visibility:hidden;pointer-events:none;width:0;height:0;overflow:hidden;";
+        document.documentElement.appendChild(themeColorProbe);
+    }
+
+    themeColorProbe.style.color = "";
+    themeColorProbe.style.color = value;
+    if (!themeColorProbe.style.color) return null;
+
+    const resolved = getComputedStyle(themeColorProbe).color;
+    const channels = resolved.match(/[\d.]+/g)?.map(Number);
+    if (!channels || channels.length < 3) return null;
+    if (resolved.startsWith("color(srgb")) {
+        return channels.slice(0, 3).map((channel) => channel * 255);
+    }
+    return channels.slice(0, 3);
+}
+
+function themeColorLuminance(value) {
+    const rgb = resolveThemeRgb(value);
+    if (!rgb) return null;
+    const [red, green, blue] = rgb.map((channel) => {
+        const srgb = Math.max(0, Math.min(255, channel)) / 255;
+        return srgb <= 0.04045
+            ? srgb / 12.92
+            : ((srgb + 0.055) / 1.055) ** 2.4;
+    });
+    return (0.2126 * red) + (0.7152 * green) + (0.0722 * blue);
 }
 
 function firstVisibleElement(selectors) {
@@ -208,21 +243,29 @@ function syncThemeVariables() {
         || readCssColor(rootStyle, ["--fg-color", "--input-text", "--p-text-color"])
         || bodyStyle.color;
     const mutedColor = readCssColor(rootStyle, ["--descrip-text", "--p-text-muted-color", "--muted-foreground"]);
+    const panelLuminance = themeColorLuminance(panelBg);
+    const isLightTheme = panelLuminance !== null && panelLuminance >= 0.5;
+    const readableTextColor = panelLuminance === null
+        ? textColor
+        : (isLightTheme ? "#18181b" : "#ffffff");
+    const readableMutedColor = panelLuminance === null
+        ? mutedColor
+        : (isLightTheme ? "#52525b" : "#dbe4f0");
 
     setRootVariable("--cmgr-sampled-panel-bg", panelBg);
     setRootVariable("--cmgr-sampled-card-bg", cardBg);
     setRootVariable("--cmgr-sampled-control-bg", controlBg);
     setRootVariable("--cmgr-sampled-border-color", borderColor);
-    setRootVariable("--cmgr-sampled-text-color", textColor);
-    setRootVariable("--cmgr-sampled-muted-color", mutedColor);
+    setRootVariable("--cmgr-sampled-text-color", readableTextColor);
+    setRootVariable("--cmgr-sampled-muted-color", readableMutedColor);
 
     setRootVariable("--cmgr-sampled-bg", panelBg);
     setRootVariable("--cmgr-sampled-panel", panelBg);
     setRootVariable("--cmgr-sampled-card", cardBg);
     setRootVariable("--cmgr-sampled-control", controlBg);
     setRootVariable("--cmgr-sampled-border", borderColor);
-    setRootVariable("--cmgr-sampled-text", textColor);
-    setRootVariable("--cmgr-sampled-muted", mutedColor);
+    setRootVariable("--cmgr-sampled-text", readableTextColor);
+    setRootVariable("--cmgr-sampled-muted", readableMutedColor);
 }
 
 function queueThemeSync() {
