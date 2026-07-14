@@ -124,6 +124,7 @@ const messages = {
         "No trained words listed.": "未列出触发词。",
         "No trained words cached.": "未缓存触发词。",
         "No Preview": "无预览",
+        "Open original image": "查看原图",
         "No description available.": "暂无描述。",
         Connection: "连接",
         "Civitai API access and restricted content permissions.": "配置 Civitai API 访问和受限内容权限。",

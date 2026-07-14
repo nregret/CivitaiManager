@@ -2159,6 +2159,17 @@ export function injectStyles() {
             object-fit: contain;
             background: transparent;
         }
+        .cmgr-detail-preview-open-original {
+            position: absolute;
+            inset: 0;
+            z-index: 6;
+            display: block;
+            cursor: zoom-in;
+        }
+        .cmgr-detail-preview-open-original:focus-visible {
+            outline: 2px solid var(--cmgr-info);
+            outline-offset: -3px;
+        }
         .cmgr-detail-preview-nav {
             position: absolute;
             top: 50%;
