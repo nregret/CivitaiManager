@@ -873,13 +873,20 @@ function getSelectedAsset() {
     return state.libraryItems.find((item) => item.id === state.selectedAssetId) || null;
 }
 
+function assetLocationPayload(asset) {
+    return {
+        root_kind: asset.root_kind,
+        relative_path: asset.relative_path,
+        storage_root_id: asset.storage_root_id || "",
+    };
+}
+
 async function moveSelectedAsset(form) {
     const asset = getSelectedAsset();
     if (!asset) return;
     try {
         await apiPost("/asset/move", {
-            root_kind: asset.root_kind,
-            relative_path: asset.relative_path,
+            ...assetLocationPayload(asset),
             target_root_kind: form.target_root_kind,
             base_model_dir: form.base_model_dir,
             category_dir: form.category_dir,
@@ -898,10 +905,7 @@ async function deleteSelectedAsset() {
     if (!asset) return;
     if (!confirm(`Delete ${asset.filename}? This also removes companion metadata and preview files.`)) return;
     try {
-        await apiPost("/asset/delete", {
-            root_kind: asset.root_kind,
-            relative_path: asset.relative_path,
-        });
+        await apiPost("/asset/delete", assetLocationPayload(asset));
         state.selectedAssetId = "";
         showToast(t("Asset deleted"));
         await loadLibrary();
@@ -916,10 +920,7 @@ async function enrichSelectedAsset() {
     if (!asset) return;
     try {
         showToast(t("Hashing asset..."));
-        const data = await apiPost("/asset/metadata", {
-            root_kind: asset.root_kind,
-            relative_path: asset.relative_path,
-        });
+        const data = await apiPost("/asset/metadata", assetLocationPayload(asset));
         showToast(t(data.matched ? "Metadata matched from Civitai" : "SHA256 metadata saved"));
         await loadLibrary();
     } catch (err) {
@@ -933,8 +934,7 @@ async function toggleSelectedFavorite() {
     if (!asset) return;
     try {
         await apiPost("/asset/favorite", {
-            root_kind: asset.root_kind,
-            relative_path: asset.relative_path,
+            ...assetLocationPayload(asset),
             favorite: !asset.favorite,
         });
         showToast(t(!asset.favorite ? "Marked favorite" : "Removed favorite"));
@@ -949,10 +949,7 @@ async function openSelectedFolder() {
     const asset = getSelectedAsset();
     if (!asset) return;
     try {
-        await apiPost("/asset/open-folder", {
-            root_kind: asset.root_kind,
-            relative_path: asset.relative_path,
-        });
+        await apiPost("/asset/open-folder", assetLocationPayload(asset));
         showToast(t("Folder opened"));
     } catch (err) {
         state.error = err.message;

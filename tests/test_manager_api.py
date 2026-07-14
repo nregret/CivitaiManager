@@ -175,6 +175,25 @@ class PathAndConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "companion metadata"):
                 manager._resolve_asset_path("workflows", "flow.civitai.json")
 
+    def test_asset_path_resolves_configured_secondary_root(self):
+        with tempfile.TemporaryDirectory() as base:
+            primary = Path(base) / "primary"
+            secondary = Path(base) / "secondary"
+            primary.mkdir()
+            secondary.mkdir()
+            asset = secondary / "model.safetensors"
+            asset.write_bytes(b"model")
+            secondary_id = manager._storage_root_id(str(secondary))
+            with (
+                mock.patch.object(manager, "_root_for_kind", return_value=str(primary)),
+                mock.patch.object(manager, "_roots_for_kind", return_value=[str(primary), str(secondary)]),
+            ):
+                resolved = manager._resolve_asset_path("loras", "model.safetensors", secondary_id)
+                with self.assertRaisesRegex(ValueError, "Unknown model storage root"):
+                    manager._resolve_asset_path("loras", "model.safetensors", "missing")
+
+        self.assertEqual(resolved, str(asset))
+
     def test_download_path_restricts_root_family_and_override_extension(self):
         model = {"name": "Example", "type": "LORA"}
         version = {"name": "v1", "baseModel": "SDXL 1.0"}
@@ -285,6 +304,25 @@ class LibraryScanTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["filename"], "flow.json")
         self.assertEqual(items[0]["name"], "Flow")
+
+    def test_scan_reads_every_configured_model_root(self):
+        with tempfile.TemporaryDirectory() as base:
+            primary = Path(base) / "primary"
+            secondary = Path(base) / "secondary"
+            for root in (primary, secondary):
+                asset_dir = root / "Shared"
+                asset_dir.mkdir(parents=True)
+                (asset_dir / "model.safetensors").write_bytes(root.name.encode("utf-8"))
+            with (
+                mock.patch.object(manager, "_root_for_kind", return_value=str(primary)),
+                mock.patch.object(manager, "_roots_for_kind", return_value=[str(primary), str(secondary)]),
+            ):
+                items = manager._scan_library_kind("loras")
+
+        self.assertEqual(len(items), 2)
+        self.assertEqual(len({item["id"] for item in items}), 2)
+        self.assertEqual({item["storage_root"] for item in items}, {str(primary), str(secondary)})
+        self.assertTrue(all("root_id=" in item["thumb_url"] for item in items))
 
 
 class LibraryIndexTests(unittest.TestCase):
@@ -652,6 +690,25 @@ class AssetApiAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 200)
         self.assertFalse(asset.exists())
         self.assertFalse(companion.exists())
+
+    async def test_delete_resolves_asset_in_secondary_model_root(self):
+        secondary = self.roots["loras"].parent / "secondary-loras"
+        secondary.mkdir()
+        asset = secondary / "model.safetensors"
+        asset.write_bytes(b"model")
+        with mock.patch.object(
+            manager,
+            "_roots_for_kind",
+            return_value=[str(self.roots["loras"]), str(secondary)],
+        ):
+            response = await manager.delete_asset_api(_JsonRequest({
+                "root_kind": "loras",
+                "storage_root_id": manager._storage_root_id(str(secondary)),
+                "relative_path": "model.safetensors",
+            }))
+
+        self.assertEqual(response.status, 200)
+        self.assertFalse(asset.exists())
 
 
 class MetadataWorkerTests(unittest.TestCase):

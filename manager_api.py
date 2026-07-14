@@ -351,26 +351,61 @@ def _validate_root_transition(source_root_kind: str, target_root_kind: str) -> N
 
 
 def _first_folder_path(folder_name: str, fallback: str) -> str:
+    return _folder_paths(folder_name, fallback)[0]
+
+
+def _folder_paths(folder_name: str, fallback: str) -> list[str]:
+    candidates: list[str] = []
     try:
-        paths = folder_paths.get_folder_paths(folder_name)
-        if paths:
-            return paths[0]
+        candidates.extend(folder_paths.get_folder_paths(folder_name) or [])
     except Exception:
         pass
-    return fallback
+    candidates.append(fallback)
+    unique: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        clean = str(candidate or "").strip()
+        if not clean:
+            continue
+        path = os.path.abspath(os.path.expanduser(clean))
+        key = os.path.normcase(os.path.realpath(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique or [os.path.abspath(fallback)]
+
+
+def _roots_for_kind(root_kind: str) -> list[str]:
+    root_kind = _normalize_root_kind(root_kind)
+    if root_kind == "loras":
+        return _folder_paths("loras", os.path.join(folder_paths.models_dir, "loras"))
+    if root_kind == "checkpoints":
+        return _folder_paths("checkpoints", os.path.join(folder_paths.models_dir, "checkpoints"))
+    if root_kind == "unet":
+        return _folder_paths("diffusion_models", os.path.join(folder_paths.models_dir, "unet"))
+    if root_kind == "workflows":
+        return [os.path.abspath(str(load_config().get("workflow_dir") or _default_workflow_dir()))]
+    raise ValueError(f"Unknown asset root: {root_kind}")
 
 
 def _root_for_kind(root_kind: str) -> str:
-    root_kind = _normalize_root_kind(root_kind)
-    if root_kind == "loras":
-        return _first_folder_path("loras", os.path.join(folder_paths.models_dir, "loras"))
-    if root_kind == "checkpoints":
-        return _first_folder_path("checkpoints", os.path.join(folder_paths.models_dir, "checkpoints"))
-    if root_kind == "unet":
-        return _first_folder_path("diffusion_models", os.path.join(folder_paths.models_dir, "unet"))
-    if root_kind == "workflows":
-        return str(load_config().get("workflow_dir") or _default_workflow_dir())
-    raise ValueError(f"Unknown asset root: {root_kind}")
+    return _roots_for_kind(root_kind)[0]
+
+
+def _storage_root_id(root_path: str) -> str:
+    normalized = os.path.normcase(os.path.realpath(os.path.abspath(root_path)))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _storage_root_for_asset(root_kind: str, storage_root_id: Any = "") -> str:
+    requested = str(storage_root_id or "").strip().lower()
+    if not requested:
+        return _root_for_kind(root_kind)
+    for root in _roots_for_kind(root_kind):
+        if _storage_root_id(root) == requested:
+            return root
+    raise ValueError("Unknown model storage root")
 
 
 def _root_display() -> dict[str, str]:
@@ -1168,6 +1203,7 @@ def _download_binary(url: str, target_path: str, api_key: str | None = None, tim
 def _build_library_snapshot() -> dict[str, Any]:
     return {
         "roots": _root_display(),
+        "root_paths": {kind: _roots_for_kind(kind) for kind in ("checkpoints", "unet", "loras", "workflows")},
         "items": _scan_all_library_items(),
         "generated_at": _now(),
     }
@@ -1215,58 +1251,64 @@ def _preview_for_asset(abs_path: str) -> str:
 
 
 def _scan_library_kind(root_kind: str) -> list[dict[str, Any]]:
-    root = _root_for_kind(root_kind)
     extensions = WORKFLOW_EXTENSIONS if root_kind == "workflows" else MODEL_EXTENSIONS
-    if not os.path.isdir(root):
-        return []
-
     items: list[dict[str, Any]] = []
-    for dirpath, _, filenames in os.walk(root):
-        for name in filenames:
-            ext = os.path.splitext(name)[1].lower()
-            if ext not in extensions:
-                continue
-            if root_kind == "workflows" and name.endswith(".civitai.json"):
-                continue
+    roots = _roots_for_kind(root_kind)
+    primary_root = _root_for_kind(root_kind)
+    if all(os.path.normcase(os.path.realpath(root)) != os.path.normcase(os.path.realpath(primary_root)) for root in roots):
+        roots.insert(0, primary_root)
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        storage_root_id = _storage_root_id(root)
+        for dirpath, _, filenames in os.walk(root):
+            for name in filenames:
+                ext = os.path.splitext(name)[1].lower()
+                if ext not in extensions:
+                    continue
+                if root_kind == "workflows" and name.endswith(".civitai.json"):
+                    continue
 
-            abs_path = os.path.join(dirpath, name)
-            rel_path = os.path.relpath(abs_path, root).replace("\\", "/")
-            folder_path = os.path.dirname(rel_path).replace("\\", "/")
-            metadata_status, metadata = _metadata_for_asset(abs_path, root_kind)
-            preview_file = _preview_for_asset(abs_path)
-            rel_parts = rel_path.split("/")
-            inferred_base = rel_parts[0] if root_kind != "workflows" and len(rel_parts) > 2 else ""
-            inferred_category = rel_parts[1] if root_kind != "workflows" and len(rel_parts) > 2 else (rel_parts[0] if root_kind == "workflows" and len(rel_parts) > 1 else "Other")
-            resolution = metadata.get("resolution") if isinstance(metadata.get("resolution"), dict) else {}
-            hashes = metadata.get("hashes") if isinstance(metadata.get("hashes"), dict) else {}
-            try:
-                stat = os.stat(abs_path)
-            except OSError:
-                continue
-            items.append({
-                "id": f"{root_kind}:{rel_path}",
-                "root_kind": root_kind,
-                "name": metadata.get("name") or os.path.splitext(name)[0],
-                "version_name": metadata.get("version_name") or "",
-                "filename": name,
-                "relative_path": rel_path,
-                "folder_path": folder_path,
-                "absolute_path": abs_path,
-                "size": stat.st_size,
-                "mtime": int(stat.st_mtime),
-                "base_model": metadata.get("base_model") or resolution.get("base_model_dir") or inferred_base,
-                "category": metadata.get("category") or resolution.get("category_dir") or inferred_category,
-                "creator": metadata.get("creator") or "",
-                "model_id": metadata.get("model_id"),
-                "version_id": metadata.get("version_id"),
-                "trained_words": metadata.get("trained_words") if isinstance(metadata.get("trained_words"), list) else [],
-                "tags": metadata.get("tags") if isinstance(metadata.get("tags"), list) else [],
-                "hash": hashes.get("SHA256") or hashes.get("sha256") or metadata.get("sha256") or "",
-                "favorite": bool(metadata.get("favorite")),
-                "metadata_status": metadata_status,
-                "has_preview": bool(preview_file),
-                "thumb_url": f"{API_PREFIX}/local-preview?root_kind={urllib.parse.quote(root_kind)}&path={urllib.parse.quote(rel_path)}&v={int(stat.st_mtime)}",
-            })
+                abs_path = os.path.join(dirpath, name)
+                rel_path = os.path.relpath(abs_path, root).replace("\\", "/")
+                folder_path = os.path.dirname(rel_path).replace("\\", "/")
+                metadata_status, metadata = _metadata_for_asset(abs_path, root_kind)
+                preview_file = _preview_for_asset(abs_path)
+                rel_parts = rel_path.split("/")
+                inferred_base = rel_parts[0] if root_kind != "workflows" and len(rel_parts) > 2 else ""
+                inferred_category = rel_parts[1] if root_kind != "workflows" and len(rel_parts) > 2 else (rel_parts[0] if root_kind == "workflows" and len(rel_parts) > 1 else "Other")
+                resolution = metadata.get("resolution") if isinstance(metadata.get("resolution"), dict) else {}
+                hashes = metadata.get("hashes") if isinstance(metadata.get("hashes"), dict) else {}
+                try:
+                    stat = os.stat(abs_path)
+                except OSError:
+                    continue
+                items.append({
+                    "id": f"{root_kind}:{storage_root_id}:{rel_path}",
+                    "root_kind": root_kind,
+                    "storage_root_id": storage_root_id,
+                    "storage_root": root,
+                    "name": metadata.get("name") or os.path.splitext(name)[0],
+                    "version_name": metadata.get("version_name") or "",
+                    "filename": name,
+                    "relative_path": rel_path,
+                    "folder_path": folder_path,
+                    "absolute_path": abs_path,
+                    "size": stat.st_size,
+                    "mtime": int(stat.st_mtime),
+                    "base_model": metadata.get("base_model") or resolution.get("base_model_dir") or inferred_base,
+                    "category": metadata.get("category") or resolution.get("category_dir") or inferred_category,
+                    "creator": metadata.get("creator") or "",
+                    "model_id": metadata.get("model_id"),
+                    "version_id": metadata.get("version_id"),
+                    "trained_words": metadata.get("trained_words") if isinstance(metadata.get("trained_words"), list) else [],
+                    "tags": metadata.get("tags") if isinstance(metadata.get("tags"), list) else [],
+                    "hash": hashes.get("SHA256") or hashes.get("sha256") or metadata.get("sha256") or "",
+                    "favorite": bool(metadata.get("favorite")),
+                    "metadata_status": metadata_status,
+                    "has_preview": bool(preview_file),
+                    "thumb_url": f"{API_PREFIX}/local-preview?root_kind={urllib.parse.quote(root_kind)}&root_id={urllib.parse.quote(storage_root_id)}&path={urllib.parse.quote(rel_path)}&v={int(stat.st_mtime)}",
+                })
     return items
 
 
@@ -1284,12 +1326,12 @@ def _scan_all_library_items() -> list[dict[str, Any]]:
         if len(group) > 1:
             for item in group:
                 item["duplicate_count"] = len(group)
-    return sorted(items, key=lambda item: (item["root_kind"], item["relative_path"].lower()))
+    return sorted(items, key=lambda item: (item["root_kind"], item.get("storage_root", "").lower(), item["relative_path"].lower()))
 
 
-def _resolve_asset_path(root_kind: str, rel_path: str) -> str:
+def _resolve_asset_path(root_kind: str, rel_path: str, storage_root_id: Any = "") -> str:
     root_kind = _normalize_root_kind(root_kind)
-    root = _root_for_kind(root_kind)
+    root = _storage_root_for_asset(root_kind, storage_root_id)
     rel_path = str(rel_path or "").replace("\\", "/").lstrip("/")
     abs_path = _safe_join(root, rel_path)
     _validate_asset_filename(root_kind, os.path.basename(abs_path))
@@ -1900,8 +1942,9 @@ async def library_api(request: web.Request) -> web.Response:
 async def local_preview_api(request: web.Request) -> web.StreamResponse:
     try:
         root_kind = request.query.get("root_kind", "")
+        storage_root_id = request.query.get("root_id", "")
         rel_path = request.query.get("path", "")
-        abs_path = _resolve_asset_path(root_kind, rel_path)
+        abs_path = _resolve_asset_path(root_kind, rel_path, storage_root_id)
         preview_file = _preview_for_asset(abs_path)
         if preview_file and os.path.isfile(preview_file):
             resp = web.FileResponse(preview_file)
@@ -2026,7 +2069,7 @@ async def delete_asset_api(request: web.Request) -> web.Response:
         body = await request.json()
         root_kind = _normalize_root_kind(body.get("root_kind"))
         rel_path = str(body.get("relative_path") or "")
-        abs_path = _resolve_asset_path(root_kind, rel_path)
+        abs_path = _resolve_asset_path(root_kind, rel_path, body.get("storage_root_id"))
         if not os.path.isfile(abs_path):
             return web.json_response({"success": False, "error": "Asset not found"}, status=404)
         os.remove(abs_path)
@@ -2043,6 +2086,7 @@ async def move_asset_api(request: web.Request) -> web.Response:
     try:
         body = await request.json()
         source_root_kind = _normalize_root_kind(body.get("root_kind"))
+        source_storage_root_id = str(body.get("storage_root_id") or "")
         source_rel_path = str(body.get("relative_path") or "")
         target_root_kind = _normalize_root_kind(body.get("target_root_kind") or source_root_kind)
         _validate_root_transition(source_root_kind, target_root_kind)
@@ -2051,10 +2095,11 @@ async def move_asset_api(request: web.Request) -> web.Response:
         filename = _safe_filename(body.get("filename"), os.path.basename(source_rel_path), os.path.splitext(source_rel_path)[1] or ".safetensors")
         _validate_asset_filename(target_root_kind, filename)
 
-        src_path = _resolve_asset_path(source_root_kind, source_rel_path)
+        source_root = _storage_root_for_asset(source_root_kind, source_storage_root_id)
+        src_path = _resolve_asset_path(source_root_kind, source_rel_path, source_storage_root_id)
         if not os.path.isfile(src_path):
             return web.json_response({"success": False, "error": "Source asset not found"}, status=404)
-        target_root = _root_for_kind(target_root_kind)
+        target_root = source_root if target_root_kind == source_root_kind else _root_for_kind(target_root_kind)
         if target_root_kind == "workflows":
             dst_path = _safe_join(target_root, category_dir, filename)
         else:
@@ -2075,6 +2120,7 @@ async def move_asset_api(request: web.Request) -> web.Response:
             "relative_path": relative_path,
             "absolute_path": dst_path,
             "root_kind": target_root_kind,
+            "storage_root_id": _storage_root_id(target_root),
         })
     except FileExistsError as exc:
         return web.json_response({"success": False, "error": str(exc)}, status=409)
@@ -2090,7 +2136,7 @@ async def favorite_asset_api(request: web.Request) -> web.Response:
         root_kind = _normalize_root_kind(body.get("root_kind"))
         rel_path = str(body.get("relative_path") or "")
         favorite = _config_bool(body.get("favorite"), "favorite", False)
-        abs_path = _resolve_asset_path(root_kind, rel_path)
+        abs_path = _resolve_asset_path(root_kind, rel_path, body.get("storage_root_id"))
         if not os.path.isfile(abs_path):
             return web.json_response({"success": False, "error": "Asset not found"}, status=404)
         status, metadata = _metadata_for_asset(abs_path, root_kind)
@@ -2119,7 +2165,7 @@ async def open_folder_api(request: web.Request) -> web.Response:
         body = await request.json()
         root_kind = _normalize_root_kind(body.get("root_kind"))
         rel_path = str(body.get("relative_path") or "")
-        abs_path = _resolve_asset_path(root_kind, rel_path)
+        abs_path = _resolve_asset_path(root_kind, rel_path, body.get("storage_root_id"))
         if not os.path.exists(abs_path):
             return web.json_response({"success": False, "error": "Asset not found"}, status=404)
         folder = os.path.dirname(abs_path)
@@ -2145,7 +2191,7 @@ async def enrich_metadata_api(request: web.Request) -> web.Response:
         body = await request.json()
         root_kind = _normalize_root_kind(body.get("root_kind"))
         rel_path = str(body.get("relative_path") or "")
-        abs_path = _resolve_asset_path(root_kind, rel_path)
+        abs_path = _resolve_asset_path(root_kind, rel_path, body.get("storage_root_id"))
         if not os.path.isfile(abs_path):
             return web.json_response({"success": False, "error": "Asset not found"}, status=404)
         async with _HASH_METADATA_REQUEST_LOCK:
