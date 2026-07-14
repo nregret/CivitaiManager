@@ -999,7 +999,7 @@ export function injectStyles() {
             padding: 24px;
             gap: 18px;
             grid-template-columns: repeat(4, minmax(0, 1fr));
-            grid-auto-rows: auto;
+            grid-auto-rows: auto !important;
             justify-content: stretch;
             align-content: start;
             align-items: start;
@@ -1879,10 +1879,10 @@ export function injectStyles() {
             width: 100%;
             height: auto !important;
             min-height: 0;
-            aspect-ratio: auto !important;
+            aspect-ratio: 2 / 3 !important;
             align-self: start;
             overflow: hidden;
-            contain: layout paint;
+            contain: paint;
         }
         .cmgr-card::before {
             content: "";
@@ -1892,11 +1892,7 @@ export function injectStyles() {
             pointer-events: none;
         }
         .cmgr-card-spacer {
-            display: block;
-            width: 100%;
-            height: 0;
-            padding-top: 150%;
-            pointer-events: none;
+            display: none !important;
         }
         .cmgr-card:hover,
         .cmgr-card.selected {
@@ -2576,15 +2572,15 @@ export function injectStyles() {
                 width: 100%;
                 height: auto !important;
                 min-height: 0;
-                aspect-ratio: auto !important;
+                aspect-ratio: 2 / 3 !important;
             }
             .cmgr-card::before {
                 display: none !important;
                 padding-top: 0 !important;
             }
             .cmgr-card-spacer {
-                display: block;
-                padding-top: 150%;
+                display: none !important;
+                padding-top: 0;
             }
             .cmgr-settings-grid {
                 grid-template-columns: 1fr;

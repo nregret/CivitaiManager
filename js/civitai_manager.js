@@ -1699,7 +1699,6 @@ function renderSearchSkeletons(count = 12) {
             class="cmgr-card cmgr-skeleton-card"
             ${index === 0 ? `role="status" aria-label="${escapeAttr(t("Searching Civitai..."))}"` : 'aria-hidden="true"'}
         >
-            <div class="cmgr-card-spacer" aria-hidden="true"></div>
             <div class="cmgr-skeleton-media"></div>
             <div class="cmgr-skeleton-badge"></div>
             <div class="cmgr-skeleton-content">
@@ -1717,8 +1716,7 @@ function renderModelCard(model, index = 0) {
     const version = getVersions(model)[0] || {};
     const badge = version.baseModel || model.baseModel || model.base_model || "Other";
     return `
-        <article class="cmgr-card ${state.selectedModel?.id === model.id ? "selected" : ""}" data-model-id="${escapeAttr(model.id)}" style="position:relative;width:100%;height:auto!important;min-height:0!important;aspect-ratio:auto!important;overflow:hidden;">
-            <div class="cmgr-card-spacer" aria-hidden="true" style="display:block;width:100%;height:0;padding-top:150%;pointer-events:none;"></div>
+        <article class="cmgr-card ${state.selectedModel?.id === model.id ? "selected" : ""}" data-model-id="${escapeAttr(model.id)}">
             <div class="cmgr-thumb">${renderMedia(modelPreviewMedia(model), model.name, { defer: index >= INITIAL_PREVIEW_LOADS, priority: index < INITIAL_PREVIEW_LOADS ? "high" : "low" })}</div>
             ${badge ? `<div class="cmgr-card-badge">${escapeHtml(badge)}</div>` : ""}
             <div class="cmgr-card-body">
@@ -1856,8 +1854,7 @@ function renderLibrary() {
 function renderAssetCard(asset, index = 0) {
     const badge = asset.base_model || inferBaseFromPath(asset) || "Other";
     return `
-        <article class="cmgr-card asset ${state.selectedAssetId === asset.id ? "selected" : ""}" data-asset-id="${escapeAttr(asset.id)}" style="position:relative;width:100%;height:auto!important;min-height:0!important;aspect-ratio:auto!important;overflow:hidden;">
-            <div class="cmgr-card-spacer" aria-hidden="true" style="display:block;width:100%;height:0;padding-top:150%;pointer-events:none;"></div>
+        <article class="cmgr-card asset ${state.selectedAssetId === asset.id ? "selected" : ""}" data-asset-id="${escapeAttr(asset.id)}">
             <div class="cmgr-thumb small">${renderImage(asset.thumb_url, asset.name, { defer: index >= INITIAL_PREVIEW_LOADS, priority: index < INITIAL_PREVIEW_LOADS ? "high" : "low" })}</div>
             ${badge ? `<div class="cmgr-card-badge">${escapeHtml(badge)}</div>` : ""}
             <div class="cmgr-card-body">
