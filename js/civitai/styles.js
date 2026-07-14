@@ -1882,6 +1882,7 @@ export function injectStyles() {
             aspect-ratio: auto !important;
             align-self: start;
             overflow: hidden;
+            contain: layout paint;
         }
         .cmgr-card::before {
             content: "";

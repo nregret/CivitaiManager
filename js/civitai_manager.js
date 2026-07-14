@@ -34,8 +34,6 @@ let pendingResponsiveSearch = false;
 let lastResponsiveSearchKey = "";
 let comboOutsideBound = false;
 let lastDownloadNavCount = -1;
-let cardGridSyncFrame = null;
-let cardGridResizeBound = false;
 
 if (!window.__cmgrLoadedImageUrls) {
     window.__cmgrLoadedImageUrls = new Set();
@@ -48,34 +46,6 @@ window.__cmgrMarkImageLoaded = (url) => {
         window.__cmgrLoadedImageUrls.delete(first);
     }
 };
-
-function scheduleCardGridSync(root = bodyEl || document) {
-    if (cardGridSyncFrame) cancelAnimationFrame(cardGridSyncFrame);
-    cardGridSyncFrame = requestAnimationFrame(() => {
-        cardGridSyncFrame = null;
-        syncCardGridRows(root);
-    });
-    if (!cardGridResizeBound) {
-        cardGridResizeBound = true;
-        window.addEventListener("resize", () => scheduleCardGridSync(), { passive: true });
-    }
-}
-
-function syncCardGridRows(root = bodyEl || document) {
-    const scope = root?.querySelectorAll ? root : document;
-    scope.querySelectorAll(".cmgr-results").forEach((grid) => {
-        const card = grid.querySelector(".cmgr-card");
-        if (!card) return;
-        const width = card.getBoundingClientRect().width;
-        if (!Number.isFinite(width) || width <= 0) return;
-        const rowHeight = Math.round(width * 1.5);
-        grid.style.setProperty("grid-auto-rows", `${rowHeight}px`, "important");
-        grid.querySelectorAll(".cmgr-card").forEach((item) => {
-            item.style.setProperty("height", "100%", "important");
-            item.style.setProperty("aspect-ratio", "auto", "important");
-        });
-    });
-}
 
 app.registerExtension({
     name: "CivitaiManager.extension",
@@ -360,7 +330,7 @@ function openOverlay() {
 }
 
 async function hydrateInitialData() {
-    const tasks = [loadConfig(), loadLibrary(), loadDownloads(), loadTaxonomy(state.assetKind, { silent: true })];
+    const tasks = [loadConfig(), loadLibrary(), loadDownloads(false), loadTaxonomy(state.assetKind, { silent: true })];
     if (state.activeTab === "Discover" && state.searchItems.length === 0 && !state.loadingSearch) {
         tasks.push(search(true, { silent: true }));
     }
@@ -431,7 +401,7 @@ async function loadConfig() {
     } catch (err) {
         console.warn("[Civitai Manager] Failed to load config:", err);
     }
-    render();
+    if (state.activeTab === "Settings") render();
 }
 
 async function loadTaxonomy(kind = state.assetKind, options = {}) {
@@ -446,7 +416,11 @@ async function loadTaxonomy(kind = state.assetKind, options = {}) {
         console.warn("[Civitai Manager] Failed to load taxonomy:", err);
     }
     state.taxonomyLoading = false;
-    render();
+    if (silent) {
+        if (kind === state.assetKind && ["Discover", "Library"].includes(state.activeTab)) refreshNav();
+    } else {
+        render();
+    }
 }
 
 async function saveSettings(form) {
@@ -684,7 +658,6 @@ function appendDiscoverItems(items, startIndex = 0) {
     results.insertAdjacentHTML("beforeend", items.map((model, index) => renderModelCard(model, startIndex + index)).join(""));
     bindDiscoverEvents(bodyEl);
     setupLazyPreviews(results);
-    scheduleCardGridSync(results);
     return true;
 }
 
@@ -874,16 +847,14 @@ async function loadDownloads(doRender = true) {
         const nextCount = activeDownloadCount();
         if (nextCount !== lastDownloadNavCount) {
             lastDownloadNavCount = nextCount;
-            const comboState = captureOpenComboState();
-            renderNav(navEl);
-            restoreOpenComboState(comboState);
+            updateDownloadNavBadge();
         }
     }
 }
 
 async function loadLibrary(force = false) {
     state.libraryLoading = true;
-    render();
+    if (state.activeTab === "Library") render();
     try {
         const data = await apiGet(`/library${force ? "?force=true" : ""}`);
         state.libraryItems = Array.isArray(data.items) ? data.items : [];
@@ -895,7 +866,7 @@ async function loadLibrary(force = false) {
         console.warn("[Civitai Manager] Failed to load library:", err);
     }
     state.libraryLoading = false;
-    render();
+    if (state.activeTab === "Library") render();
 }
 
 function getSelectedAsset() {
@@ -999,14 +970,30 @@ function render(options = {}) {
         restoreOpenComboState(comboState);
     }
     bodyEl.innerHTML = `
-        ${state.error ? `<div class="cmgr-alert"><span>${escapeHtml(state.error)}</span><button data-action="clear-error">${escapeHtml(t("Dismiss"))}</button></div>` : ""}
-        ${state.toast ? `<div class="cmgr-toast">${escapeHtml(state.toast)}</div>` : ""}
+        <div class="cmgr-message-layer">${renderTransientMessages()}</div>
         ${renderActiveTab()}
     `;
     bindCommonEvents(bodyEl);
     bindActiveTabEvents(bodyEl);
     if (scrollState) restoreScrollState(scrollState);
-    scheduleCardGridSync(bodyEl);
+}
+
+function renderTransientMessages() {
+    return `
+        ${state.error ? `<div class="cmgr-alert"><span>${escapeHtml(state.error)}</span><button data-action="clear-error">${escapeHtml(t("Dismiss"))}</button></div>` : ""}
+        ${state.toast ? `<div class="cmgr-toast">${escapeHtml(state.toast)}</div>` : ""}
+    `;
+}
+
+function updateTransientMessages() {
+    const layer = bodyEl?.querySelector(".cmgr-message-layer");
+    if (!layer) return;
+    layer.innerHTML = renderTransientMessages();
+    const clear = layer.querySelector('[data-action="clear-error"]');
+    if (clear) clear.onclick = () => {
+        state.error = "";
+        updateTransientMessages();
+    };
 }
 
 function captureOpenComboState() {
@@ -1130,6 +1117,33 @@ function renderNav(nav) {
     const clearTag = nav.querySelector("[data-clear-tag]");
     if (clearTag) clearTag.onclick = () => selectTag("");
     ensureComboOutsideHandler();
+}
+
+function refreshNav() {
+    if (!navEl) return;
+    const comboState = captureOpenComboState();
+    const scrollTop = navEl.scrollTop;
+    const scrollLeft = navEl.scrollLeft;
+    renderNav(navEl);
+    restoreOpenComboState(comboState);
+    navEl.scrollTop = scrollTop;
+    navEl.scrollLeft = scrollLeft;
+}
+
+function updateDownloadNavBadge() {
+    const button = navEl?.querySelector('[data-tab="Downloads"]');
+    if (!button) return;
+    const count = activeDownloadCount();
+    let badge = button.querySelector("b");
+    if (!count) {
+        badge?.remove();
+        return;
+    }
+    if (!badge) {
+        badge = document.createElement("b");
+        button.appendChild(badge);
+    }
+    badge.textContent = String(count);
 }
 
 function renderAssetSidebar() {
@@ -2046,7 +2060,7 @@ function bindCommonEvents(root) {
     const clear = root.querySelector('[data-action="clear-error"]');
     if (clear) clear.onclick = () => {
         state.error = "";
-        render();
+        updateTransientMessages();
     };
     root.querySelectorAll("[data-copy]").forEach((btn) => {
         btn.onclick = async () => {
@@ -2066,7 +2080,6 @@ function bindActiveTabEvents(root) {
     if (state.activeTab === "Downloads") bindDownloadsEvents(root);
     if (state.activeTab === "Settings") bindSettingsEvents(root);
     setupLazyPreviews(root);
-    scheduleCardGridSync(root);
 }
 
 function setupLazyPreviews(root) {
@@ -2755,9 +2768,9 @@ function showToast(message) {
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => {
         state.toast = "";
-        render();
+        updateTransientMessages();
     }, 1800);
-    render();
+    updateTransientMessages();
 }
 
 function escapeHtml(value) {
