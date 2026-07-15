@@ -258,6 +258,10 @@ function writeNodeData(node, loras = node?._cmgrLoras || []) {
 function redrawNode(node) {
     node?.setDirtyCanvas?.(true, true);
     app?.canvas?.setDirty?.(true, true);
+    (node?.widgets || []).forEach((widget) => {
+        if (!widget?.__cmgrLoraControl) return;
+        widget.triggerDraw?.();
+    });
 }
 
 function shortLoraName(entry, maxLength = 30) {
@@ -468,7 +472,7 @@ function createNodeLoraControl({ entry, nodeWidth, onToggle, onRemove }) {
             const rowHeight = Math.min(NODE_CONTROL_HEIGHT, Math.max(24, height || NODE_CONTROL_HEIGHT));
             const rowY = y + Math.max(0, ((height || NODE_CONTROL_HEIGHT) - rowHeight) / 2);
             const rowWidth = Math.max(120, width - NODE_SIDE_MARGIN * 2);
-            const enabled = widget.value !== false;
+            const enabled = widget.__cmgrLoraEntry.enabled !== false;
             const vueWidgetCanvas = ctx?.canvas?.closest?.(".lg-node-widget") ? ctx.canvas : null;
             if (vueWidgetCanvas?.style) {
                 vueWidgetCanvas.style.cursor = "pointer";
@@ -541,7 +545,7 @@ function createNodeLoraControl({ entry, nodeWidth, onToggle, onRemove }) {
             if (event?.type && !["pointerdown", "mousedown"].includes(event.type)) return false;
             const region = nodeLoraControlHitRegion(widget, pointerOffset, node);
             if (region === "toggle") {
-                const enabled = widget.value === false;
+                const enabled = widget.__cmgrLoraEntry.enabled === false;
                 widget.value = enabled;
                 widget.__cmgrLoraEntry.enabled = enabled;
                 if (widget.__cmgrStrengthWidget) widget.__cmgrStrengthWidget.disabled = !enabled;
