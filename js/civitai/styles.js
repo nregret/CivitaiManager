@@ -77,6 +77,7 @@ export function injectStyles() {
             box-shadow: 0 28px 80px rgba(0, 0, 0, 0.5);
             display: flex;
             flex-direction: column;
+            position: relative;
         }
         .cmgr-topbar {
             height: 68px;
@@ -1766,8 +1767,12 @@ export function injectStyles() {
             background: color-mix(in srgb, var(--cmgr-panel) 94%, #000 6%);
             box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
             box-sizing: border-box;
-            max-height: min(360px, calc(100vh - 180px));
+            max-height: min(360px, var(--cmgr-combo-available-height, calc(100vh - 180px)));
             min-width: 100%;
+        }
+        .cmgr-combo.open-up .cmgr-combo-popover {
+            top: auto;
+            bottom: calc(100% + 6px);
         }
         .cmgr-combo.open .cmgr-combo-popover {
             display: grid;
@@ -1796,7 +1801,7 @@ export function injectStyles() {
         .cmgr-combo-list {
             display: grid;
             gap: 3px;
-            max-height: min(270px, calc(100vh - 260px));
+            max-height: min(270px, calc(var(--cmgr-combo-available-height, calc(100vh - 180px)) - 56px));
             min-height: 32px;
             overflow: auto;
             overscroll-behavior: contain;
@@ -2695,6 +2700,1141 @@ export function injectStyles() {
             .cmgr-detail {
                 border-top-color: var(--cmgr-border);
             }
+        }
+        /* Multi-LoRA node selector. It deliberately reuses the manager theme
+           while keeping a smaller, LoRA-only information architecture. */
+        .cmgr-lora-shell {
+            width: min(1480px, 96vw);
+            height: min(900px, 94vh);
+            position: relative;
+        }
+        .cmgr-lora-layout {
+            grid-template-columns: 210px minmax(0, 1fr);
+        }
+        .cmgr-lora-nav {
+            min-width: 0;
+        }
+        .cmgr-lora-nav-summary {
+            margin-top: auto;
+            padding: 14px 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            border: 1px solid var(--cmgr-border);
+            border-radius: var(--cmgr-radius);
+            background: var(--cmgr-control);
+            color: var(--cmgr-muted);
+            font-size: 11px;
+        }
+        .cmgr-lora-nav-summary b {
+            color: var(--cmgr-text);
+            font-size: 12px;
+        }
+        .cmgr-lora-folder-group {
+            gap: 6px;
+        }
+        .cmgr-lora-folder-all,
+        .cmgr-lora-folder-select {
+            min-height: 34px;
+        }
+        .cmgr-lora-folder-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+        }
+        .cmgr-lora-folder-glyph {
+            position: relative;
+            flex: 0 0 auto;
+            width: 13px;
+            height: 9px;
+            border: 1.5px solid currentColor;
+            border-radius: 2px;
+            opacity: 0.75;
+        }
+        .cmgr-lora-folder-glyph::before {
+            content: "";
+            position: absolute;
+            left: -1.5px;
+            top: -5px;
+            width: 6px;
+            height: 4px;
+            border: 1.5px solid currentColor;
+            border-bottom: 0;
+            border-radius: 2px 2px 0 0;
+            background: var(--cmgr-panel);
+        }
+        .cmgr-lora-folder-glyph.is-library {
+            box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--cmgr-accent) 35%, transparent);
+        }
+        .cmgr-lora-folder-glyph.is-file {
+            width: 10px;
+            height: 13px;
+            border-radius: 2px;
+        }
+        .cmgr-lora-folder-glyph.is-file::before {
+            display: none;
+        }
+        .cmgr-lora-folder-select.is-ancestor:not(.active) {
+            background: color-mix(in srgb, var(--cmgr-accent) 7%, transparent);
+            color: color-mix(in srgb, var(--cmgr-text) 84%, var(--cmgr-muted));
+        }
+        .cmgr-lora-local-toolbar {
+            grid-template-columns: minmax(250px, auto) minmax(220px, 1fr) auto;
+        }
+        .cmgr-lora-local-heading {
+            display: grid;
+            gap: 5px;
+            min-width: 0;
+        }
+        .cmgr-lora-local-heading h2 {
+            margin: 0;
+        }
+        .cmgr-lora-folder-context {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            min-width: 0;
+            color: var(--cmgr-muted);
+            font-size: 10.5px;
+        }
+        .cmgr-lora-folder-context-label {
+            flex: 0 0 auto;
+        }
+        .cmgr-lora-breadcrumb {
+            display: flex;
+            align-items: center;
+            min-width: 0;
+            overflow-x: auto;
+            scrollbar-width: none;
+        }
+        .cmgr-lora-breadcrumb::-webkit-scrollbar {
+            display: none;
+        }
+        .cmgr-lora-breadcrumb button {
+            flex: 0 0 auto;
+            max-width: 150px;
+            overflow: hidden;
+            border: 0;
+            border-radius: 5px;
+            background: transparent;
+            color: var(--cmgr-muted);
+            cursor: pointer;
+            padding: 2px 4px;
+            font: inherit;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .cmgr-lora-breadcrumb button:hover,
+        .cmgr-lora-breadcrumb button.active {
+            background: color-mix(in srgb, var(--cmgr-accent) 10%, transparent);
+            color: var(--cmgr-text);
+        }
+        .cmgr-lora-breadcrumb-separator {
+            flex: 0 0 auto;
+            color: color-mix(in srgb, var(--cmgr-muted) 70%, transparent);
+            padding: 0 1px;
+        }
+        .cmgr-lora-body,
+        .cmgr-lora-page {
+            min-width: 0;
+            min-height: 0;
+            height: 100%;
+            overflow: hidden;
+        }
+        .cmgr-lora-page {
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+        }
+        .cmgr-lora-toolbar {
+            display: grid;
+            grid-template-columns: auto minmax(220px, 1fr) minmax(150px, 190px) auto;
+            align-items: center;
+            gap: 10px;
+        }
+        .cmgr-lora-toolbar h2 {
+            white-space: nowrap;
+        }
+        .cmgr-lora-search {
+            min-width: 0;
+        }
+        .cmgr-lora-split {
+            min-height: 0;
+            grid-template-columns: minmax(0, 1fr) clamp(330px, 27vw, 410px) !important;
+        }
+        .cmgr-lora-results {
+            min-width: 0;
+            min-height: 0;
+            overflow-y: auto;
+            grid-template-columns: repeat(auto-fill, minmax(175px, 1fr));
+            grid-auto-rows: 280px !important;
+            gap: 14px;
+            padding: 18px;
+        }
+        .cmgr-lora-card,
+        .cmgr-lora-card.asset {
+            height: 280px !important;
+            min-height: 280px;
+            cursor: pointer;
+        }
+        .cmgr-lora-card .cmgr-thumb {
+            inset: 2px;
+        }
+        .cmgr-lora-detail {
+            min-width: 0;
+            overflow: hidden;
+        }
+        .cmgr-lora-detail-preview {
+            height: 260px;
+        }
+        .cmgr-lora-detail-preview a,
+        .cmgr-lora-applied-preview a {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        .cmgr-no-preview {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--cmgr-control);
+            color: var(--cmgr-muted);
+        }
+        .cmgr-lora-info-block {
+            display: grid;
+            gap: 8px;
+            margin: 16px 0;
+            color: var(--cmgr-muted);
+            font-size: 12px;
+        }
+        .cmgr-lora-info-block em {
+            color: var(--cmgr-muted);
+        }
+        .cmgr-lora-detail-actions {
+            display: grid;
+            gap: 10px;
+            margin-top: 18px;
+        }
+        .cmgr-file-actions {
+            display: grid;
+            gap: 10px;
+            margin-top: 16px;
+            padding-top: 2px;
+        }
+        .cmgr-file-actions-title {
+            margin: 0;
+        }
+        .cmgr-file-action-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+        .cmgr-file-action {
+            min-width: 0;
+            min-height: 62px;
+            display: grid;
+            grid-template-columns: 30px minmax(0, 1fr);
+            align-items: center;
+            gap: 9px;
+            border: 1px solid var(--cmgr-border);
+            border-radius: calc(var(--cmgr-radius) + 1px);
+            background: var(--cmgr-control);
+            color: var(--cmgr-text);
+            cursor: pointer;
+            padding: 9px 10px;
+            text-align: left;
+            transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+        }
+        .cmgr-file-action:hover {
+            border-color: color-mix(in srgb, var(--cmgr-accent) 34%, var(--cmgr-border));
+            background: color-mix(in srgb, var(--cmgr-accent) 7%, var(--cmgr-control));
+            transform: translateY(-1px);
+        }
+        .cmgr-file-action.is-active {
+            border-color: color-mix(in srgb, #f59e0b 38%, var(--cmgr-border));
+            background: color-mix(in srgb, #f59e0b 8%, var(--cmgr-control));
+        }
+        .cmgr-file-action > span {
+            min-width: 0;
+            display: grid;
+            gap: 3px;
+        }
+        .cmgr-file-action b,
+        .cmgr-file-action small {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .cmgr-file-action b {
+            color: var(--cmgr-text);
+            font-size: 11.5px;
+        }
+        .cmgr-file-action small {
+            color: var(--cmgr-muted);
+            font-size: 9.5px;
+            font-weight: 560;
+        }
+        .cmgr-file-action-icon {
+            width: 30px;
+            height: 30px;
+            display: grid;
+            place-items: center;
+            box-sizing: border-box;
+            border-radius: 9px;
+            background: color-mix(in srgb, var(--cmgr-accent) 11%, transparent);
+            color: color-mix(in srgb, var(--cmgr-accent) 72%, var(--cmgr-text));
+            font-size: 15px;
+            font-style: normal;
+        }
+        .cmgr-file-action.is-active .is-favorite {
+            background: color-mix(in srgb, #f59e0b 16%, transparent);
+            color: #f59e0b;
+        }
+        .cmgr-file-action-icon.is-folder::before {
+            content: "";
+            width: 14px;
+            height: 10px;
+            box-sizing: border-box;
+            border: 1.5px solid currentColor;
+            border-radius: 2px;
+            box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--cmgr-accent) 22%, transparent);
+        }
+        .cmgr-file-danger-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 0 0;
+            border-top: 1px solid var(--cmgr-border);
+        }
+        .cmgr-file-danger-row > span {
+            min-width: 0;
+            display: grid;
+            gap: 3px;
+        }
+        .cmgr-file-danger-row b {
+            color: var(--cmgr-text);
+            font-size: 11px;
+        }
+        .cmgr-file-danger-row small {
+            color: var(--cmgr-muted);
+            font-size: 9.5px;
+        }
+        .cmgr-file-danger-row .cmgr-danger {
+            min-height: 34px;
+            padding: 0 13px;
+        }
+        .cmgr-lora-file-info b {
+            overflow-wrap: anywhere;
+            text-align: right;
+        }
+        .cmgr-notification-host {
+            position: absolute;
+            top: 42px;
+            left: 50%;
+            z-index: 220;
+            width: min(520px, calc(100% - 32px));
+            display: grid;
+            gap: 8px;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+        .cmgr-notification-host:empty {
+            display: none;
+        }
+        .cmgr-notification-host .cmgr-notice {
+            position: relative;
+            top: auto;
+            right: auto;
+            display: grid;
+            grid-template-columns: 24px minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 10px;
+            min-height: 46px;
+            box-sizing: border-box;
+            margin: 0;
+            padding: 9px 14px 9px 11px;
+            border: 1px solid color-mix(in srgb, var(--cmgr-accent) 30%, var(--cmgr-border));
+            border-radius: 14px;
+            background: color-mix(in srgb, var(--cmgr-panel) 93%, var(--cmgr-accent) 7%);
+            color: var(--cmgr-text);
+            box-shadow: 0 16px 42px rgba(0, 0, 0, 0.34), 0 3px 10px rgba(0, 0, 0, 0.18);
+            backdrop-filter: blur(18px) saturate(1.12);
+            -webkit-backdrop-filter: blur(18px) saturate(1.12);
+            font-size: 12.5px;
+            font-weight: 680;
+            line-height: 1.42;
+            animation: cmgrNoticeDrop 0.28s cubic-bezier(0.2, 0.82, 0.24, 1) both;
+        }
+        .cmgr-notification-host .cmgr-notice.cmgr-error {
+            border-color: color-mix(in srgb, var(--cmgr-bad) 42%, var(--cmgr-border));
+            background: color-mix(in srgb, var(--cmgr-panel) 90%, var(--cmgr-bad) 10%);
+        }
+        .cmgr-notice-icon {
+            width: 24px;
+            height: 24px;
+            display: grid;
+            place-items: center;
+            border-radius: 50%;
+            background: color-mix(in srgb, var(--cmgr-accent) 18%, transparent);
+            color: color-mix(in srgb, var(--cmgr-accent) 82%, var(--cmgr-text));
+            font-size: 12px;
+            font-style: normal;
+            font-weight: 900;
+        }
+        .cmgr-notice.cmgr-error .cmgr-notice-icon {
+            background: color-mix(in srgb, var(--cmgr-bad) 18%, transparent);
+            color: color-mix(in srgb, var(--cmgr-bad) 76%, var(--cmgr-text));
+        }
+        .cmgr-lora-detail [data-action="match-local"]:disabled {
+            opacity: 1;
+            cursor: wait;
+            background: color-mix(in srgb, var(--cmgr-accent) 78%, var(--cmgr-panel));
+            border-color: color-mix(in srgb, var(--cmgr-accent) 72%, var(--cmgr-text));
+            color: #fff;
+            box-shadow: 0 5px 16px color-mix(in srgb, var(--cmgr-accent) 22%, transparent);
+        }
+        .cmgr-lora-detail [data-action="match-local"]:disabled::before {
+            content: "";
+            width: 12px;
+            height: 12px;
+            flex: 0 0 auto;
+            box-sizing: border-box;
+            border: 2px solid rgba(255, 255, 255, 0.42);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: cmgrLoraMatchSpin 0.72s linear infinite;
+        }
+        @keyframes cmgrLoraMatchSpin {
+            to { transform: rotate(360deg); }
+        }
+        .cmgr-notice-dismiss {
+            width: 26px;
+            height: 26px;
+            display: grid;
+            place-items: center;
+            pointer-events: auto;
+            border: 0;
+            border-radius: 50%;
+            background: color-mix(in srgb, var(--cmgr-text) 8%, transparent);
+            color: var(--cmgr-text);
+            cursor: pointer;
+            padding: 0;
+            font-size: 17px;
+            line-height: 1;
+        }
+        .cmgr-notice-dismiss:hover {
+            background: color-mix(in srgb, var(--cmgr-text) 14%, transparent);
+        }
+        @keyframes cmgrNoticeDrop {
+            from {
+                opacity: 0;
+                transform: translateY(-18px) scale(0.98);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+        }
+        .cmgr-lora-pending {
+            display: grid;
+            gap: 8px;
+            margin: 16px 0;
+            padding: 12px;
+            border: 1px solid var(--cmgr-border);
+            border-radius: var(--cmgr-radius);
+            background: var(--cmgr-control);
+        }
+        .cmgr-lora-pending > div:first-child {
+            display: flex;
+            justify-content: space-between;
+            color: var(--cmgr-text);
+            font-size: 12px;
+        }
+        .cmgr-lora-applied-list,
+        .cmgr-lora-download-list {
+            min-height: 0;
+            overflow-y: auto;
+            padding: 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .cmgr-lora-toolbar-note {
+            grid-column: 2 / -2;
+            color: var(--cmgr-muted);
+            font-size: 12px;
+        }
+        .cmgr-lora-applied-item {
+            display: grid;
+            grid-template-columns: 88px minmax(0, 1fr) auto;
+            gap: 14px;
+            align-items: center;
+            padding: 12px;
+            border: 1px solid var(--cmgr-border);
+            border-radius: var(--cmgr-radius);
+            background: var(--cmgr-panel);
+        }
+        .cmgr-lora-applied-item.is-disabled {
+            opacity: 0.58;
+        }
+        .cmgr-lora-applied-preview {
+            width: 88px;
+            height: 88px;
+            overflow: hidden;
+            border-radius: calc(var(--cmgr-radius) - 3px);
+            background: var(--cmgr-control);
+        }
+        .cmgr-lora-applied-preview img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .cmgr-lora-applied-main,
+        .cmgr-lora-applied-head > div {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .cmgr-lora-applied-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 14px;
+        }
+        .cmgr-lora-applied-head b,
+        .cmgr-lora-applied-head span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .cmgr-lora-applied-head span,
+        .cmgr-lora-toggle,
+        .cmgr-lora-strength span {
+            color: var(--cmgr-muted);
+            font-size: 11px;
+        }
+        .cmgr-lora-toggle {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+        }
+        .cmgr-lora-strength {
+            display: grid;
+            grid-template-columns: auto minmax(120px, 1fr) 44px;
+            align-items: center;
+            gap: 10px;
+        }
+        .cmgr-lora-strength input {
+            width: 100%;
+            accent-color: var(--cmgr-accent);
+        }
+        .cmgr-lora-strength output {
+            color: var(--cmgr-text);
+            font-variant-numeric: tabular-nums;
+            text-align: right;
+        }
+        .cmgr-lora-order-actions {
+            display: grid;
+            grid-template-columns: repeat(2, 38px);
+            gap: 6px;
+        }
+        .cmgr-lora-order-actions .cmgr-danger {
+            grid-column: 1 / -1;
+        }
+        .cmgr-lora-download-item {
+            display: grid;
+            gap: 10px;
+            padding: 14px;
+            border: 1px solid var(--cmgr-border);
+            border-radius: var(--cmgr-radius);
+            background: var(--cmgr-panel);
+        }
+        .cmgr-lora-download-head,
+        .cmgr-lora-download-foot {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+        .cmgr-lora-download-head b,
+        .cmgr-lora-download-foot > span {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .cmgr-lora-download-head span,
+        .cmgr-lora-download-foot {
+            color: var(--cmgr-muted);
+            font-size: 12px;
+        }
+        .cmgr-lora-download-foot > div {
+            display: flex;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        /* A calm, informative placeholder keeps the permanent detail rail
+           useful even before a card is selected. */
+        .cmgr-empty-detail-scroll {
+            overflow: hidden;
+            padding: 20px;
+        }
+        .cmgr-empty-detail {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            min-height: 0;
+            overflow: hidden;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 24px;
+            padding: clamp(24px, 4vh, 42px) 24px;
+            border: 1px solid color-mix(in srgb, var(--cmgr-border) 82%, transparent);
+            border-radius: calc(var(--cmgr-radius) + 4px);
+            background:
+                radial-gradient(circle at 50% 18%, color-mix(in srgb, var(--cmgr-accent) 13%, transparent), transparent 35%),
+                linear-gradient(155deg, color-mix(in srgb, var(--cmgr-panel-soft) 92%, transparent), color-mix(in srgb, var(--cmgr-panel) 97%, transparent));
+            color: var(--cmgr-muted);
+            text-align: center;
+        }
+        .cmgr-empty-detail::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            opacity: 0.28;
+            background-image: radial-gradient(color-mix(in srgb, var(--cmgr-text) 18%, transparent) 0.7px, transparent 0.7px);
+            background-size: 15px 15px;
+            mask-image: linear-gradient(to bottom, #000, transparent 72%);
+        }
+        .cmgr-empty-detail-art {
+            position: relative;
+            width: 146px;
+            height: 132px;
+            flex: 0 0 auto;
+        }
+        .cmgr-empty-detail-orbit {
+            position: absolute;
+            inset: 12px;
+            border: 1px solid color-mix(in srgb, var(--cmgr-accent) 26%, transparent);
+            border-radius: 50%;
+            transform: rotate(-18deg) scaleY(0.48);
+        }
+        .cmgr-empty-detail-orbit.orbit-two {
+            inset: 27px 5px;
+            border-style: dashed;
+            transform: rotate(27deg) scaleY(0.55);
+            opacity: 0.65;
+        }
+        .cmgr-empty-detail-card {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 82px;
+            height: 96px;
+            border: 1px solid color-mix(in srgb, var(--cmgr-border) 78%, var(--cmgr-accent));
+            border-radius: 11px;
+            background: color-mix(in srgb, var(--cmgr-panel-soft) 92%, var(--cmgr-accent) 8%);
+            box-shadow: 0 18px 34px color-mix(in srgb, #000 24%, transparent);
+        }
+        .cmgr-empty-detail-card.card-back {
+            transform: translate(-40%, -48%) rotate(9deg);
+            opacity: 0.48;
+        }
+        .cmgr-empty-detail-card.card-front {
+            transform: translate(-58%, -55%) rotate(-4deg);
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 8px;
+            padding: 12px;
+            box-sizing: border-box;
+        }
+        .cmgr-empty-detail-card.card-front::before {
+            content: "";
+            height: 45px;
+            border-radius: 7px;
+            background: linear-gradient(145deg, color-mix(in srgb, var(--cmgr-accent) 28%, transparent), color-mix(in srgb, var(--cmgr-accent) 7%, transparent));
+        }
+        .cmgr-empty-detail-card.card-front i {
+            height: 4px;
+            border-radius: 999px;
+            background: color-mix(in srgb, var(--cmgr-text) 22%, transparent);
+        }
+        .cmgr-empty-detail-card.card-front i:nth-child(2) { width: 74%; }
+        .cmgr-empty-detail-card.card-front i:nth-child(3) { width: 48%; }
+        .cmgr-empty-detail-spark {
+            position: absolute;
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--cmgr-accent);
+            box-shadow: 0 0 14px color-mix(in srgb, var(--cmgr-accent) 72%, transparent);
+        }
+        .cmgr-empty-detail-spark.spark-one { top: 20px; right: 22px; }
+        .cmgr-empty-detail-spark.spark-two { left: 17px; bottom: 28px; width: 4px; height: 4px; opacity: 0.65; }
+        .cmgr-empty-detail-copy {
+            position: relative;
+            z-index: 1;
+            display: grid;
+            justify-items: center;
+            gap: 8px;
+            max-width: 290px;
+        }
+        .cmgr-empty-detail-kicker {
+            color: color-mix(in srgb, var(--cmgr-accent) 74%, var(--cmgr-text));
+            font-size: 10px;
+            font-weight: 850;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+        }
+        .cmgr-empty-detail h2 {
+            margin: 0;
+            color: var(--cmgr-text);
+            font-size: 20px;
+            line-height: 1.25;
+        }
+        .cmgr-empty-detail p {
+            margin: 0;
+            color: var(--cmgr-muted);
+            font-size: 12px;
+            line-height: 1.65;
+        }
+        .cmgr-empty-detail-features {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 7px;
+        }
+        .cmgr-empty-detail-features span {
+            border: 1px solid var(--cmgr-border);
+            border-radius: 999px;
+            background: color-mix(in srgb, var(--cmgr-control) 82%, transparent);
+            color: color-mix(in srgb, var(--cmgr-text) 72%, var(--cmgr-muted));
+            padding: 5px 9px;
+            font-size: 10.5px;
+            font-weight: 720;
+        }
+
+        /* The LoRA-only manager now follows the exact outer geometry and
+           detail hierarchy of the full CivitaiManager popup. */
+        .cmgr-lora-shell {
+            width: min(1780px, calc(100vw - 24px));
+            height: calc(100vh - 24px);
+        }
+        .cmgr-lora-layout {
+            grid-template-columns: clamp(260px, 16vw, 292px) minmax(0, 1fr);
+        }
+        .cmgr-lora-nav {
+            overflow-x: hidden;
+            overflow-y: auto;
+        }
+        .cmgr-lora-filter-group {
+            gap: 9px;
+        }
+        .cmgr-lora-category-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 7px;
+        }
+        .cmgr-lora-category-grid .cmgr-filter-chip {
+            min-width: 0;
+            min-height: 36px;
+            padding: 7px 8px;
+            font-size: 12.5px;
+            font-weight: 720;
+            line-height: 1.2;
+        }
+        .cmgr-lora-nav-summary {
+            flex: 0 0 auto;
+        }
+        .cmgr-lora-split {
+            grid-template-columns: minmax(0, 1fr) clamp(340px, 22vw, 400px) !important;
+        }
+        .cmgr-lora-detail-preview {
+            height: clamp(240px, 38vh, 420px);
+        }
+        .cmgr-detail-stat-row {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 7px;
+            margin: 0 0 14px;
+        }
+        .cmgr-detail-stat-row > span {
+            min-width: 0;
+            display: grid;
+            gap: 3px;
+            padding: 9px;
+            border: 1px solid var(--cmgr-border);
+            border-radius: var(--cmgr-radius);
+            background: var(--cmgr-panel-soft);
+        }
+        .cmgr-detail-stat-row b {
+            overflow: hidden;
+            color: var(--cmgr-text);
+            font-size: 12px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .cmgr-detail-stat-row small {
+            color: var(--cmgr-muted);
+            font-size: 10px;
+        }
+        .cmgr-lora-detail .cmgr-description {
+            margin-bottom: 6px;
+        }
+        @media (max-width: 900px) {
+            .cmgr-lora-shell {
+                width: 100vw;
+                height: 100vh;
+            }
+            .cmgr-lora-layout {
+                display: grid;
+                grid-template-columns: 1fr;
+                grid-template-rows: auto minmax(0, 1fr);
+            }
+            .cmgr-lora-nav {
+                display: flex;
+                overflow-x: auto;
+                padding: 8px;
+            }
+            .cmgr-lora-nav .cmgr-nav-group {
+                display: flex;
+                flex-direction: row;
+                padding: 0;
+                margin: 0;
+                border: 0;
+            }
+            .cmgr-lora-nav .cmgr-nav-title,
+            .cmgr-lora-nav-summary,
+            .cmgr-lora-filter-group {
+                display: none;
+            }
+            .cmgr-lora-split {
+                display: grid;
+                grid-template-columns: 1fr !important;
+                grid-template-rows: minmax(380px, 1fr) auto;
+                overflow-y: auto;
+            }
+            .cmgr-lora-detail {
+                max-height: none;
+                border-left: 0;
+                border-top: 1px solid var(--cmgr-border);
+            }
+            .cmgr-lora-toolbar {
+                grid-template-columns: 1fr auto;
+            }
+            .cmgr-lora-toolbar h2,
+            .cmgr-lora-search,
+            .cmgr-lora-toolbar-note {
+                grid-column: 1 / -1;
+            }
+            .cmgr-lora-applied-item {
+                grid-template-columns: 64px minmax(0, 1fr);
+            }
+            .cmgr-lora-applied-preview {
+                width: 64px;
+                height: 64px;
+            }
+            .cmgr-lora-order-actions {
+                grid-column: 1 / -1;
+                display: flex;
+                justify-content: flex-end;
+            }
+        }
+
+        /* Shared discovery toolbar used by both manager surfaces. */
+        .cmgr-search-toolbar,
+        .cmgr-lora-toolbar.cmgr-search-toolbar {
+            min-height: 74px;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) clamp(340px, 22vw, 400px);
+            align-items: stretch;
+            gap: 0;
+            box-sizing: border-box;
+            padding: 0;
+            flex-wrap: nowrap;
+        }
+        .cmgr-search-toolbar-main {
+            min-width: 0;
+            display: grid;
+            grid-template-columns: 148px minmax(220px, 1fr);
+            align-items: center;
+            gap: 14px;
+            box-sizing: border-box;
+            padding: 11px 18px 11px 24px;
+        }
+        .cmgr-lora-toolbar.cmgr-search-toolbar .cmgr-search-toolbar-main {
+            padding-left: 18px;
+        }
+        .cmgr-search-toolbar-heading {
+            min-width: 0;
+            display: grid;
+            align-content: center;
+            gap: 2px;
+            padding-left: 2px;
+        }
+        .cmgr-search-toolbar-heading > span {
+            overflow: hidden;
+            color: var(--cmgr-muted);
+            font-size: 9.5px;
+            font-weight: 760;
+            letter-spacing: 0.08em;
+            line-height: 1.1;
+            text-overflow: ellipsis;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+        .cmgr-search-toolbar .cmgr-search-toolbar-heading h2 {
+            min-width: 0;
+            overflow: hidden;
+            grid-column: auto;
+            margin: 0;
+            color: var(--cmgr-text);
+            font-size: 17px;
+            font-weight: 780;
+            line-height: 1.2;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .cmgr-search-toolbar .cmgr-search-wrap {
+            width: 100%;
+            min-width: 0;
+            max-width: none;
+            flex: none;
+        }
+        .cmgr-search-toolbar .cmgr-search,
+        .cmgr-search-toolbar .cmgr-combo-control,
+        .cmgr-search-toolbar select.cmgr-input,
+        .cmgr-search-toolbar .cmgr-search-submit {
+            min-height: 40px;
+            height: 40px;
+            box-sizing: border-box;
+            border-radius: calc(var(--cmgr-radius) - 1px);
+        }
+        .cmgr-search-toolbar .cmgr-search {
+            width: 100%;
+            min-width: 0;
+            padding-left: 38px;
+            padding-right: 38px;
+            background: var(--cmgr-control);
+            font-size: 13px;
+        }
+        .cmgr-search-toolbar .cmgr-search-mark {
+            left: 13px;
+            width: 14px;
+            height: 14px;
+            box-sizing: border-box;
+            border: 2px solid var(--cmgr-muted);
+            border-radius: 50%;
+            font-size: 0;
+            opacity: 0.82;
+        }
+        .cmgr-search-toolbar .cmgr-search-mark::after {
+            content: "";
+            position: absolute;
+            right: -4px;
+            bottom: -2px;
+            width: 6px;
+            height: 2px;
+            border-radius: 999px;
+            background: var(--cmgr-muted);
+            transform: rotate(45deg);
+            transform-origin: left center;
+        }
+        .cmgr-search-toolbar .cmgr-search-clear {
+            right: 7px;
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+        }
+        .cmgr-search-toolbar-actions {
+            display: grid;
+            grid-template-columns: 190px 68px;
+            align-items: center;
+            justify-content: end;
+            gap: 8px;
+            box-sizing: border-box;
+            padding: 11px 18px;
+            border-left: 1px solid var(--cmgr-border);
+        }
+        .cmgr-search-toolbar-actions > :only-child {
+            grid-column: 2;
+        }
+        .cmgr-library > .cmgr-library-match-status {
+            flex: 0 0 auto;
+            box-sizing: border-box;
+            padding: 9px 24px;
+            border-bottom: 1px solid var(--cmgr-border);
+            background: var(--cmgr-panel-soft);
+        }
+        .cmgr-local-search-toolbar .cmgr-lora-local-heading {
+            gap: 3px;
+            overflow: hidden;
+        }
+        .cmgr-local-search-toolbar .cmgr-lora-folder-context {
+            overflow: hidden;
+        }
+        .cmgr-settings-footer [data-action="save-settings"][aria-busy="true"] {
+            opacity: 1;
+            cursor: wait;
+            background: color-mix(in srgb, var(--cmgr-accent) 78%, var(--cmgr-panel));
+            border-color: color-mix(in srgb, var(--cmgr-accent) 58%, var(--cmgr-border));
+            color: #fff;
+        }
+        .cmgr-settings-footer [data-action="save-settings"][aria-busy="true"]::before {
+            content: "";
+            width: 12px;
+            height: 12px;
+            flex: 0 0 auto;
+            box-sizing: border-box;
+            border: 2px solid rgba(255, 255, 255, 0.38);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: cmgrLoraMatchSpin 0.72s linear infinite;
+        }
+        .cmgr-sidebar-launcher {
+            min-height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            box-sizing: border-box;
+            padding: 24px;
+            color: var(--cmgr-text);
+            text-align: center;
+        }
+        .cmgr-sidebar-launcher-icon {
+            width: 48px;
+            height: 48px;
+            display: grid;
+            place-items: center;
+            border: 1px solid color-mix(in srgb, var(--cmgr-accent) 28%, var(--cmgr-border));
+            border-radius: 15px;
+            background: color-mix(in srgb, var(--cmgr-accent) 12%, var(--cmgr-control));
+            color: color-mix(in srgb, var(--cmgr-accent) 78%, var(--cmgr-text));
+            font-size: 21px;
+        }
+        .cmgr-sidebar-launcher h3 {
+            margin: 4px 0 0;
+            color: var(--cmgr-text);
+            font-size: 16px;
+        }
+        .cmgr-sidebar-launcher p {
+            max-width: 260px;
+            margin: 0 0 6px;
+            color: var(--cmgr-muted);
+            font-size: 12px;
+            line-height: 1.55;
+        }
+        .cmgr-search-toolbar .cmgr-toolbar-select,
+        .cmgr-search-toolbar .cmgr-lora-sort {
+            width: 190px;
+            min-width: 190px;
+            max-width: 190px;
+        }
+        .cmgr-search-toolbar .cmgr-search-submit {
+            width: 68px;
+            min-width: 68px;
+            padding: 0 12px;
+        }
+        @media (max-width: 900px) {
+            .cmgr-search-toolbar,
+            .cmgr-lora-toolbar.cmgr-search-toolbar {
+                grid-template-columns: minmax(0, 1fr);
+                align-items: center;
+                gap: 8px;
+                padding: 10px 16px;
+            }
+            .cmgr-search-toolbar-main {
+                grid-template-columns: minmax(118px, 148px) minmax(220px, 1fr);
+                gap: 12px;
+                padding: 0;
+            }
+            .cmgr-lora-toolbar.cmgr-search-toolbar .cmgr-search-toolbar-main {
+                padding-left: 0;
+            }
+            .cmgr-search-toolbar-heading {
+                display: grid;
+            }
+            .cmgr-search-toolbar-actions {
+                grid-template-columns: 190px 68px;
+                justify-content: end;
+                padding: 0;
+                border-left: 0;
+            }
+        }
+        @media (max-width: 720px) {
+            .cmgr-search-toolbar-main {
+                grid-template-columns: minmax(0, 1fr);
+            }
+            .cmgr-search-toolbar-heading {
+                grid-template-columns: auto minmax(0, 1fr);
+                align-items: baseline;
+                gap: 8px;
+            }
+            .cmgr-search-toolbar-heading > span {
+                order: 2;
+            }
+            .cmgr-search-toolbar-actions {
+                grid-template-columns: minmax(0, 1fr) auto;
+            }
+            .cmgr-search-toolbar .cmgr-toolbar-select,
+            .cmgr-search-toolbar .cmgr-lora-sort {
+                width: 100%;
+                max-width: none;
+            }
+        }
+
+        /* Shared sidebar count badges. Keep them quiet until their row is active. */
+        .cmgr-nav .cmgr-nav-btn > span {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .cmgr-nav .cmgr-nav-btn > b {
+            flex: 0 0 auto;
+            min-width: 23px;
+            height: 22px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            box-sizing: border-box;
+            margin-left: 10px;
+            padding: 0 7px;
+            border: 1px solid color-mix(in srgb, var(--cmgr-border) 86%, transparent);
+            border-radius: 999px;
+            background: color-mix(in srgb, var(--cmgr-control) 82%, transparent);
+            color: color-mix(in srgb, var(--cmgr-text) 68%, var(--cmgr-muted));
+            box-shadow: none;
+            font-size: 10px;
+            font-weight: 760;
+            font-variant-numeric: tabular-nums;
+            letter-spacing: 0.01em;
+            line-height: 1;
+        }
+        .cmgr-nav .cmgr-nav-btn:hover:not(.active) > b {
+            border-color: color-mix(in srgb, var(--cmgr-text) 14%, var(--cmgr-border));
+            background: var(--cmgr-panel-hover);
+            color: var(--cmgr-text);
+        }
+        .cmgr-nav .cmgr-nav-btn.active > b {
+            border-color: color-mix(in srgb, var(--cmgr-accent) 28%, var(--cmgr-border));
+            background: color-mix(in srgb, var(--cmgr-accent) 12%, var(--cmgr-control));
+            color: color-mix(in srgb, var(--cmgr-accent) 72%, var(--cmgr-text));
+            box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cmgr-accent) 5%, transparent);
         }
     `;
     if (!style.isConnected) {

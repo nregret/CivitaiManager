@@ -4,7 +4,7 @@ import json
 import urllib.parse
 
 
-USER_AGENT = "ComfyUI-Civitai-Manager/1.0"
+USER_AGENT = "CivitaiManager/1.0"
 
 
 def request_headers(api_key: str | None = None, json_content: bool = True) -> dict[str, str]:

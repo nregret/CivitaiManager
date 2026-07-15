@@ -1,6 +1,6 @@
-# ComfyUI Civitai Manager
+# CivitaiManager
 
-一个以 UI 和 HTTP API 形式运行的 ComfyUI 扩展，用于浏览、下载和整理 Civitai 上的 Checkpoint、UNet、LoRA 与 Workflow。它不会向工作流节点菜单注册节点。
+`CivitaiManager` 是一个以 UI、HTTP API 和工作流节点形式运行的 ComfyUI 扩展，用于浏览、下载和整理 Civitai 上的 Checkpoint、UNet、LoRA 与 Workflow。
 
 ## 功能
 
@@ -9,19 +9,28 @@
 - Downloads 支持取消和重试；历史写入用户目录，ComfyUI 重启后仍可查看。
 - Library：扫描本地模型库，支持移动、重命名、收藏、删除和通过 SHA256 补全元数据。
 - Settings：配置 API Key、NSFW、Workflow 目录和伴随文件保存选项。
+- Multi LoRA Loader：按顺序启用和调整多个 LoRA；节点内的精简 LoRA 管理器支持搜索、下载后自动应用、本地管理和下载任务控制。
 
 ## 安装
 
-将本目录放入 ComfyUI 的 `custom_nodes` 目录，然后重启 ComfyUI。扩展只使用 Python 标准库以及 ComfyUI 已提供的 `aiohttp`、`folder_paths` 和 `PromptServer`，不需要额外运行时依赖。
+在 ComfyUI 的 `custom_nodes` 目录中执行：
+
+```powershell
+git clone https://github.com/nregret/CivitaiManager.git
+```
+
+然后重启 ComfyUI。扩展只使用 Python 标准库以及 ComfyUI 已提供的 `aiohttp`、`folder_paths` 和 `PromptServer`，不需要额外运行时依赖。
 
 配置保存在 ComfyUI 用户目录下的 `civitai_manager/config.json`。API Key 不会通过配置读取接口返回给浏览器。
+
+为兼容既有安装与用户数据，内部 HTTP 路由 `/civitai-manager/api` 以及用户数据目录 `civitai_manager` 保持不变。
 
 ## 项目结构
 
 ```text
-civitaimanager/
+CivitaiManager/
 ├── __init__.py                 # ComfyUI 扩展入口与 Web 目录声明
-├── nodes.py                    # 导入后端并注册 API；不注册工作流节点
+├── nodes.py                    # 注册后端 API 与 Multi LoRA Loader 节点
 ├── manager_api.py              # 后端编排与 API handler
 ├── backend/
 │   ├── client.py               # Civitai 请求辅助
@@ -31,11 +40,13 @@ civitaimanager/
 │   └── routes.py               # HTTP 路由表
 ├── js/
 │   ├── civitai_manager.js      # UI 编排与交互
+│   ├── civitai_lora_node.js    # 多 LoRA 节点控件与 LoRA 专用弹窗
 │   └── civitai/                # 常量、状态、API、样式、i18n
 ├── locales/{en,zh}/            # ComfyUI 官方 locale 资源
 ├── pyproject.toml              # Comfy Registry 发布元数据
 └── tests/
-    └── test_manager_api.py     # 后端核心逻辑回归测试
+    ├── test_manager_api.py     # 后端核心逻辑回归测试
+    └── test_nodes.py           # 多 LoRA 节点解析、路径与执行测试
 ```
 
 主要数据流：
@@ -48,6 +59,10 @@ ComfyUI Browser UI
         ├── Civitai API：搜索、详情、元数据
         ├── Download Queue：3 个后台 worker，最多 20 个活动任务
         └── Local Library：扫描并管理模型和 companion 文件
+
+MODEL → Civitai Multi LoRA Loader → MODEL
+                  │
+                  └── lora_list_json：按界面顺序保存路径、强度和启用状态
 ```
 
 下载任务写入 ComfyUI 用户目录的 `civitai_manager/downloads.json`：最多保留 100 条已结束记录，结束 24 小时后自动清理。重启时仍处于队列或下载中的任务会标记为失败，并可从界面重试。

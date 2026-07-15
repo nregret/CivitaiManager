@@ -1,1 +1,1 @@
-"""Internal backend modules for Civitai Manager."""
+"""Internal backend modules for CivitaiManager."""

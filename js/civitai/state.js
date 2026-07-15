@@ -24,6 +24,7 @@ export const state = {
     resolvingPath: false,
     libraryLoading: false,
     libraryFilter: "all",
+    libraryQuery: "",
     libraryItems: [],
     expandedLocalFolders: {},
     selectedAssetId: "",

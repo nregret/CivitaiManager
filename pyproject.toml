@@ -1,5 +1,5 @@
 [project]
-name = "comfyui-civitai-manager"
+name = "CivitaiManager"
 version = "1.0.0"
 description = "Browse, download, and organize Civitai assets inside ComfyUI."
 readme = "README.md"
@@ -8,5 +8,5 @@ dependencies = []
 
 [tool.comfy]
 PublisherId = "yunlong"
-DisplayName = "ComfyUI Civitai Manager"
+DisplayName = "CivitaiManager"
 Icon = ""

@@ -115,6 +115,33 @@ class RemoteImageVariantTests(unittest.TestCase):
         self.assertEqual(manager._civitai_media_cache_url(video, 450), video)
 
 
+class SearchResultCacheTests(unittest.TestCase):
+    def setUp(self):
+        manager._SEARCH_RESULT_CACHE.clear()
+
+    def tearDown(self):
+        manager._SEARCH_RESULT_CACHE.clear()
+
+    def test_identical_search_uses_short_lived_backend_cache(self):
+        request = _QueryRequest({
+            "kind": "lora",
+            "query": "speed",
+            "sort": "Newest",
+            "limit": "20",
+        })
+        result = {"items": [{"id": 1}], "metadata": {}}
+        with (
+            mock.patch.object(manager, "load_config", return_value={"allow_nsfw": True}),
+            mock.patch.object(manager, "_search_civitai_models", return_value=result) as search,
+        ):
+            first = asyncio.run(manager.search_api(request))
+            second = asyncio.run(manager.search_api(request))
+
+        self.assertEqual(first.body, result)
+        self.assertEqual(second.body, result)
+        self.assertEqual(search.call_count, 1)
+
+
 class PathAndConfigTests(unittest.TestCase):
     def test_safe_join_rejects_parent_escape(self):
         with tempfile.TemporaryDirectory() as root:
@@ -279,6 +306,9 @@ class LibraryScanTests(unittest.TestCase):
                 "base_model": "SDXL 1.0",
                 "category": "Character",
                 "hashes": {"SHA256": "ABC"},
+                "source": "civitai",
+                "metadata_match_status": "matched",
+                "version": {"id": 22, "modelId": 11},
             }), encoding="utf-8")
             asset.with_suffix(".png").write_bytes(b"preview")
             (asset_dir / "notes.txt").write_text("ignored", encoding="utf-8")
@@ -291,6 +321,9 @@ class LibraryScanTests(unittest.TestCase):
         self.assertEqual(items[0]["metadata_status"], "cached")
         self.assertTrue(items[0]["has_preview"])
         self.assertEqual(items[0]["hash"], "ABC")
+        self.assertEqual(items[0]["model_id"], 11)
+        self.assertEqual(items[0]["version_id"], 22)
+        self.assertEqual(items[0]["civitai_url"], "https://civitai.red/models/11?modelVersionId=22")
 
     def test_workflow_scan_skips_companion_json(self):
         with tempfile.TemporaryDirectory() as root:
@@ -712,6 +745,22 @@ class AssetApiAsyncTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MetadataWorkerTests(unittest.TestCase):
+    def test_complete_model_uses_version_model_id_when_summary_omits_it(self):
+        version = {
+            "id": 22,
+            "modelId": 11,
+            "model": {"name": "Example", "type": "LORA"},
+        }
+        with (
+            mock.patch.object(manager, "load_config", return_value={}),
+            mock.patch.object(manager, "_read_json_url_with_retries", return_value=None) as read_model,
+        ):
+            model = manager._complete_civitai_model(version)
+
+        self.assertEqual(model["id"], 11)
+        self.assertEqual(model["name"], "Example")
+        self.assertIn("/models/11", read_model.call_args.args[0])
+
     def test_worker_hashes_and_writes_companion_metadata(self):
         with tempfile.TemporaryDirectory() as root:
             asset = Path(root) / "model.safetensors"

@@ -1,1 +1,21 @@
-{}
+{
+  "CivitaiMultiLoraLoader": {
+    "display_name": "CivitaiManager - 多 LoRA 加载器",
+    "description": "加载并按顺序应用通过 CivitaiManager 选择的多个本地 LoRA。",
+    "inputs": {
+      "model": {
+        "name": "模型",
+        "tooltip": "按从上到下的顺序将已启用 LoRA 应用到此模型。"
+      },
+      "lora_list_json": {
+        "name": "LoRA 列表",
+        "tooltip": "由 LoRA 管理器弹窗维护的序列化 LoRA 配置。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "模型"
+      }
+    }
+  }
+}

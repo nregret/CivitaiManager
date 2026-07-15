@@ -1,1 +1,21 @@
-{}
+{
+  "CivitaiMultiLoraLoader": {
+    "display_name": "CivitaiManager - Multi LoRA Loader",
+    "description": "Load and apply multiple local LoRAs selected with CivitaiManager.",
+    "inputs": {
+      "model": {
+        "name": "Model",
+        "tooltip": "The model that receives the enabled LoRAs in top-to-bottom order."
+      },
+      "lora_list_json": {
+        "name": "LoRA list",
+        "tooltip": "Serialized LoRA configuration managed by the LoRA Manager popup."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Model"
+      }
+    }
+  }
+}

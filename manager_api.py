@@ -1,4 +1,4 @@
-"""Backend API for the Civitai Manager ComfyUI extension."""
+"""Backend API for the CivitaiManager ComfyUI extension."""
 
 from __future__ import annotations
 
@@ -60,6 +60,8 @@ CIVITAI_MEDIA_ID_RE = re.compile(
     re.IGNORECASE,
 )
 TAXONOMY_CACHE_TTL = 10 * 60
+SEARCH_RESULT_CACHE_TTL = 60
+SEARCH_RESULT_CACHE_LIMIT = 64
 SEARCH_FALLBACK_CURSOR_PREFIX = "fallback:"
 SEARCH_FALLBACK_MAX_PAGES = 8
 RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
@@ -93,6 +95,8 @@ _HASH_METADATA_LOCK = threading.Lock()
 _HASH_METADATA_REQUEST_LOCK = asyncio.Lock()
 _TAXONOMY_CACHE: dict[str, dict[str, Any]] = {}
 _TAXONOMY_LOCK = threading.Lock()
+_SEARCH_RESULT_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
+_SEARCH_RESULT_CACHE_LOCK = threading.Lock()
 _LIBRARY_INDEX = LibraryIndex(ttl_seconds=30)
 
 
@@ -176,7 +180,7 @@ def load_config() -> dict[str, Any]:
                 config.update(data)
             config = _normalize_config(config)
         except Exception as exc:
-            print(f"[Civitai Manager] Failed to read config: {exc}")
+            print(f"[CivitaiManager] Failed to read config: {exc}")
             config = _normalize_config(_default_config())
     else:
         config = _normalize_config(config)
@@ -213,6 +217,8 @@ def _save_config_unlocked(data: dict[str, Any]) -> dict[str, Any]:
     _CONFIG_CACHE = current
     with _TAXONOMY_LOCK:
         _TAXONOMY_CACHE.clear()
+    with _SEARCH_RESULT_CACHE_LOCK:
+        _SEARCH_RESULT_CACHE.clear()
     return dict(current)
 
 
@@ -233,7 +239,7 @@ def _read_json_url(url: str, api_key: str | None = None, timeout: int = 30, quie
                 return {"error": "Empty response from Civitai"}
             return json.loads(raw)
     except json.JSONDecodeError as exc:
-        print(f"[Civitai Manager] Invalid JSON for {url}: {exc}")
+        print(f"[CivitaiManager] Invalid JSON for {url}: {exc}")
         return {"error": "Invalid JSON response from Civitai"}
     except urllib.error.HTTPError as exc:
         body = ""
@@ -243,7 +249,7 @@ def _read_json_url(url: str, api_key: str | None = None, timeout: int = 30, quie
             pass
         message = _http_error_message(body, f"HTTP {exc.code}: {exc.reason}")
         if not quiet:
-            print(f"[Civitai Manager] HTTP {exc.code} for {url}: {body or exc.reason}")
+            print(f"[CivitaiManager] HTTP {exc.code} for {url}: {body or exc.reason}")
         return {
             "error": message,
             "status": exc.code,
@@ -252,7 +258,7 @@ def _read_json_url(url: str, api_key: str | None = None, timeout: int = 30, quie
         }
     except Exception as exc:
         if not quiet:
-            print(f"[Civitai Manager] Request failed for {url}: {exc}")
+            print(f"[CivitaiManager] Request failed for {url}: {exc}")
         return {"error": str(exc)}
 
 
@@ -1170,7 +1176,7 @@ def _download_worker(
                 preview_path = _companion_preview_path(final_path, preview_url)
                 _download_binary(preview_url, preview_path, api_key=None, timeout=30)
             except Exception as exc:
-                print(f"[Civitai Manager] Preview download failed: {exc}")
+                print(f"[CivitaiManager] Preview download failed: {exc}")
     except DownloadCancelled:
         store.update(task_id, status="cancelled", error="", cancelled_at=_now())
     except urllib.error.HTTPError as exc:
@@ -1252,6 +1258,20 @@ def _preview_for_asset(abs_path: str) -> str:
     return ""
 
 
+def _civitai_ids_from_metadata(metadata: dict[str, Any]) -> tuple[Any, Any]:
+    model = metadata.get("model") if isinstance(metadata.get("model"), dict) else {}
+    version = metadata.get("version") if isinstance(metadata.get("version"), dict) else {}
+    model_id = (
+        metadata.get("model_id")
+        or metadata.get("modelId")
+        or model.get("id")
+        or version.get("modelId")
+        or version.get("model_id")
+    )
+    version_id = metadata.get("version_id") or metadata.get("versionId") or version.get("id")
+    return model_id, version_id
+
+
 def _scan_library_kind(root_kind: str) -> list[dict[str, Any]]:
     extensions = WORKFLOW_EXTENSIONS if root_kind == "workflows" else MODEL_EXTENSIONS
     items: list[dict[str, Any]] = []
@@ -1281,6 +1301,12 @@ def _scan_library_kind(root_kind: str) -> list[dict[str, Any]]:
                 inferred_category = rel_parts[1] if root_kind != "workflows" and len(rel_parts) > 2 else (rel_parts[0] if root_kind == "workflows" and len(rel_parts) > 1 else "Other")
                 resolution = metadata.get("resolution") if isinstance(metadata.get("resolution"), dict) else {}
                 hashes = metadata.get("hashes") if isinstance(metadata.get("hashes"), dict) else {}
+                model_id, version_id = _civitai_ids_from_metadata(metadata)
+                civitai_url = metadata.get("civitai_url") or ""
+                if not civitai_url and model_id:
+                    civitai_url = f"https://civitai.red/models/{model_id}"
+                    if version_id:
+                        civitai_url += f"?modelVersionId={version_id}"
                 try:
                     stat = os.stat(abs_path)
                 except OSError:
@@ -1302,10 +1328,10 @@ def _scan_library_kind(root_kind: str) -> list[dict[str, Any]]:
                     "base_model": metadata.get("base_model") or resolution.get("base_model_dir") or inferred_base,
                     "category": metadata.get("category") or resolution.get("category_dir") or inferred_category,
                     "creator": metadata.get("creator") or "",
-                    "model_id": metadata.get("model_id"),
-                    "version_id": metadata.get("version_id"),
-                    "civitai_url": metadata.get("civitai_url") or "",
-                    "metadata_match_status": metadata.get("metadata_match_status") or ("matched" if metadata.get("model_id") else "unknown"),
+                    "model_id": model_id,
+                    "version_id": version_id,
+                    "civitai_url": civitai_url,
+                    "metadata_match_status": metadata.get("metadata_match_status") or ("matched" if model_id else "unknown"),
                     "source": metadata.get("source") or "local",
                     "trained_words": metadata.get("trained_words") if isinstance(metadata.get("trained_words"), list) else [],
                     "tags": metadata.get("tags") if isinstance(metadata.get("tags"), list) else [],
@@ -1388,7 +1414,7 @@ def _move_asset_bundle(
                     os.makedirs(os.path.dirname(src), exist_ok=True)
                     shutil.move(dst, src)
                 except Exception as rollback_exc:
-                    print(f"[Civitai Manager] Failed to roll back move {dst}: {rollback_exc}")
+                    print(f"[CivitaiManager] Failed to roll back move {dst}: {rollback_exc}")
         raise
 
 
@@ -1421,7 +1447,7 @@ def _delete_companions(asset_path: str, root_kind: str) -> None:
             try:
                 os.remove(path)
             except Exception as exc:
-                print(f"[Civitai Manager] Failed to delete companion {path}: {exc}")
+                print(f"[CivitaiManager] Failed to delete companion {path}: {exc}")
 
 
 def _hash_file(path: str) -> str:
@@ -1453,9 +1479,10 @@ def _stored_sha256(metadata: dict[str, Any]) -> str:
 
 def _complete_civitai_model(version: dict[str, Any]) -> dict[str, Any]:
     summary = version.get("model") if isinstance(version.get("model"), dict) else {}
-    model_id = summary.get("id")
+    model_id = summary.get("id") or version.get("modelId") or version.get("model_id")
     if not model_id:
         return summary
+    summary = {**summary, "id": model_id}
     config = load_config()
     api_key = str(config.get("civitai_api_key") or "").strip() or None
     url = f"{CIVITAI_API_BASE}/models/{urllib.parse.quote(str(model_id))}"
@@ -1799,6 +1826,23 @@ async def search_api(request: web.Request) -> web.Response:
         tag = request.query.get("tag", "")
         base_model = request.query.get("base_model") or request.query.get("baseModel") or request.query.get("baseModels") or ""
         limit = max(1, min(int(request.query.get("limit", "40")), 100))
+        cache_key = (
+            kind,
+            query,
+            cursor,
+            sort,
+            limit,
+            tag,
+            base_model,
+            category,
+            bool(config.get("allow_nsfw", True)),
+            bool(str(config.get("civitai_api_key") or "").strip()),
+        )
+        now = _now()
+        with _SEARCH_RESULT_CACHE_LOCK:
+            cached = _SEARCH_RESULT_CACHE.get(cache_key)
+            if cached and now - int(cached.get("timestamp") or 0) < SEARCH_RESULT_CACHE_TTL:
+                return web.json_response(cached["data"])
         result = await asyncio.to_thread(
             _search_civitai_models,
             kind,
@@ -1811,6 +1855,21 @@ async def search_api(request: web.Request) -> web.Response:
             category,
             config,
         )
+        if isinstance(result, dict) and not result.get("error"):
+            with _SEARCH_RESULT_CACHE_LOCK:
+                stale_keys = [
+                    key for key, value in _SEARCH_RESULT_CACHE.items()
+                    if now - int(value.get("timestamp") or 0) >= SEARCH_RESULT_CACHE_TTL
+                ]
+                for key in stale_keys:
+                    _SEARCH_RESULT_CACHE.pop(key, None)
+                if len(_SEARCH_RESULT_CACHE) >= SEARCH_RESULT_CACHE_LIMIT:
+                    oldest_key = min(
+                        _SEARCH_RESULT_CACHE,
+                        key=lambda key: int(_SEARCH_RESULT_CACHE[key].get("timestamp") or 0),
+                    )
+                    _SEARCH_RESULT_CACHE.pop(oldest_key, None)
+                _SEARCH_RESULT_CACHE[cache_key] = {"timestamp": now, "data": result}
         return web.json_response(result)
     except Exception as exc:
         return web.json_response({"items": [], "metadata": {}, "error": str(exc)}, status=500)
@@ -2112,7 +2171,7 @@ async def image_proxy_api(request: web.Request) -> web.StreamResponse:
             }, handle)
         return web.Response(body=data, content_type=content_type, headers={"Cache-Control": "public, max-age=31536000, immutable"})
     except Exception as exc:
-        print(f"[Civitai Manager] Image proxy failed: {exc}")
+        print(f"[CivitaiManager] Image proxy failed: {exc}")
         return _placeholder_svg()
 
 
