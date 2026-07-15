@@ -8,7 +8,7 @@ export const HIGH_PRIORITY_PREVIEW_LOADS = 4;
 export const DETAIL_PREVIEW_LIMIT = 12;
 export const TRANSPARENT_PIXEL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
 
-export const TABS = ["Discover", "Library", "Downloads", "Settings"];
+export const TABS = ["Discover", "Library", "Favorites", "Downloads", "Settings"];
 
 export const ASSET_KINDS = [
     { id: "checkpoint", label: "Checkpoint/UNet", rootKinds: ["checkpoints", "unet"] },

@@ -3948,6 +3948,192 @@ export function injectStyles() {
             color: color-mix(in srgb, var(--cmgr-accent) 72%, var(--cmgr-text));
             box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cmgr-accent) 5%, transparent);
         }
+
+        /* Shared favorites UI used by the full manager and the LoRA manager. */
+        .cmgr-favorite-folder-group {
+            gap: 6px;
+        }
+        .cmgr-favorite-folder-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            min-width: 0;
+        }
+        .cmgr-favorite-folder-head .cmgr-nav-title {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .cmgr-favorite-folder-add,
+        .cmgr-favorite-folder-actions button,
+        .cmgr-favorite-folder-editor button {
+            display: inline-grid;
+            place-items: center;
+            box-sizing: border-box;
+            border: 1px solid color-mix(in srgb, var(--cmgr-border) 88%, transparent);
+            background: color-mix(in srgb, var(--cmgr-control) 88%, transparent);
+            color: var(--cmgr-muted);
+            cursor: pointer;
+            transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+        }
+        .cmgr-favorite-folder-add {
+            width: 28px;
+            height: 28px;
+            flex: 0 0 auto;
+            border-radius: 9px;
+            color: color-mix(in srgb, var(--cmgr-accent) 76%, var(--cmgr-text));
+            font-size: 18px;
+            line-height: 1;
+        }
+        .cmgr-favorite-folder-add:hover,
+        .cmgr-favorite-folder-actions button:hover,
+        .cmgr-favorite-folder-editor button:hover {
+            border-color: color-mix(in srgb, var(--cmgr-accent) 34%, var(--cmgr-border));
+            background: color-mix(in srgb, var(--cmgr-accent) 9%, var(--cmgr-control));
+            color: var(--cmgr-text);
+            transform: translateY(-1px);
+        }
+        .cmgr-favorite-folder-list {
+            display: grid;
+            gap: 4px;
+            min-width: 0;
+        }
+        .cmgr-favorite-folder-row {
+            position: relative;
+            min-width: 0;
+        }
+        .cmgr-favorite-folder-row > .cmgr-nav-btn {
+            padding-right: 66px;
+        }
+        .cmgr-favorite-folder-actions {
+            position: absolute;
+            top: 50%;
+            right: 7px;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            opacity: 0;
+            pointer-events: none;
+            transform: translateY(-50%);
+            transition: opacity 0.15s ease;
+        }
+        .cmgr-favorite-folder-row:hover .cmgr-favorite-folder-actions,
+        .cmgr-favorite-folder-row:focus-within .cmgr-favorite-folder-actions {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .cmgr-favorite-folder-actions button {
+            width: 24px;
+            height: 24px;
+            border-radius: 7px;
+            padding: 0;
+            font-size: 12px;
+        }
+        .cmgr-favorite-folder-editor {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 28px 28px;
+            align-items: center;
+            gap: 5px;
+            padding: 6px;
+            border: 1px solid color-mix(in srgb, var(--cmgr-accent) 24%, var(--cmgr-border));
+            border-radius: 11px;
+            background: color-mix(in srgb, var(--cmgr-accent) 5%, var(--cmgr-panel-soft));
+        }
+        .cmgr-favorite-folder-editor .cmgr-input {
+            width: 100%;
+            min-width: 0;
+            height: 32px;
+            min-height: 32px;
+            padding-inline: 9px;
+        }
+        .cmgr-favorite-folder-editor button {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            padding: 0;
+        }
+        .cmgr-favorite-controls {
+            display: grid;
+            grid-template-columns: minmax(112px, auto) minmax(0, 1fr);
+            align-items: end;
+            gap: 9px;
+            margin: 14px 0;
+            padding: 10px;
+            border: 1px solid color-mix(in srgb, #f59e0b 20%, var(--cmgr-border));
+            border-radius: calc(var(--cmgr-radius) + 2px);
+            background: color-mix(in srgb, #f59e0b 4%, var(--cmgr-panel-soft));
+        }
+        .cmgr-favorite-toggle {
+            min-height: 39px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            box-sizing: border-box;
+            padding: 0 13px;
+            border: 1px solid color-mix(in srgb, var(--cmgr-border) 90%, transparent);
+            border-radius: 10px;
+            background: var(--cmgr-control);
+            color: var(--cmgr-text);
+            cursor: pointer;
+            font: inherit;
+        }
+        .cmgr-favorite-toggle span {
+            color: #f59e0b;
+            font-size: 17px;
+            line-height: 1;
+        }
+        .cmgr-favorite-toggle.is-active {
+            border-color: color-mix(in srgb, #f59e0b 40%, var(--cmgr-border));
+            background: color-mix(in srgb, #f59e0b 10%, var(--cmgr-control));
+        }
+        .cmgr-favorite-toggle:hover {
+            border-color: color-mix(in srgb, #f59e0b 54%, var(--cmgr-border));
+            background: color-mix(in srgb, #f59e0b 14%, var(--cmgr-control));
+        }
+        .cmgr-favorite-folder-select {
+            min-width: 0;
+            display: grid;
+            gap: 5px;
+        }
+        .cmgr-favorite-folder-select > span {
+            color: var(--cmgr-muted);
+            font-size: 10px;
+            font-weight: 760;
+        }
+        .cmgr-favorite-folder-select .cmgr-input {
+            width: 100%;
+            min-width: 0;
+            height: 39px;
+        }
+        .cmgr-favorite-total {
+            min-width: 34px;
+            height: 30px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            box-sizing: border-box;
+            padding: 0 10px;
+            border: 1px solid color-mix(in srgb, var(--cmgr-accent) 24%, var(--cmgr-border));
+            border-radius: 999px;
+            background: color-mix(in srgb, var(--cmgr-accent) 8%, var(--cmgr-control));
+            color: var(--cmgr-text);
+            font-size: 11px;
+            font-weight: 800;
+            font-variant-numeric: tabular-nums;
+        }
+        .cmgr-card-tags .favorite {
+            border-color: color-mix(in srgb, #f59e0b 34%, var(--cmgr-border));
+            background: color-mix(in srgb, #f59e0b 12%, var(--cmgr-control));
+            color: color-mix(in srgb, #f59e0b 80%, var(--cmgr-text));
+        }
+        @media (max-width: 480px) {
+            .cmgr-favorite-controls {
+                grid-template-columns: minmax(0, 1fr);
+            }
+        }
     `;
     if (!style.isConnected) {
         document.head.appendChild(style);

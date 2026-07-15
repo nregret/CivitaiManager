@@ -393,6 +393,115 @@ class LibraryIndexTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
 
 
+class FavoritesApiTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.path_patch = mock.patch.object(
+            manager,
+            "_favorites_path",
+            return_value=str(Path(self.temp_dir.name) / "favorites.json"),
+        )
+        self.scan_patch = mock.patch.object(manager, "_scan_roots", return_value={"items": []})
+        self.path_patch.start()
+        self.scan_patch.start()
+
+    async def asyncTearDown(self):
+        self.scan_patch.stop()
+        self.path_patch.stop()
+        self.temp_dir.cleanup()
+
+    async def test_remote_favorite_can_be_grouped_renamed_and_unfiled(self):
+        created = await manager.favorite_folder_api(_JsonRequest({"action": "create", "name": "Styles"}))
+        self.assertEqual(created.status, 200)
+        folder_id = created.body["folders"][0]["id"]
+        item = {
+            "asset_kind": "lora",
+            "model_id": 1060551,
+            "name": "Illustrious Style Pack",
+            "model": {"id": 1060551, "name": "Illustrious Style Pack", "type": "LORA"},
+        }
+
+        favorited = await manager.favorite_item_api(_JsonRequest({
+            "favorite": True,
+            "folder_id": folder_id,
+            "item": item,
+        }))
+
+        self.assertEqual(favorited.status, 200)
+        self.assertEqual(favorited.body["items"][0]["key"], "civitai:lora:1060551")
+        self.assertEqual(favorited.body["items"][0]["folder_id"], folder_id)
+
+        renamed = await manager.favorite_folder_api(_JsonRequest({
+            "action": "rename",
+            "folder_id": folder_id,
+            "name": "Illustration",
+        }))
+        self.assertEqual(renamed.body["folders"][0]["name"], "Illustration")
+
+        deleted = await manager.favorite_folder_api(_JsonRequest({
+            "action": "delete",
+            "folder_id": folder_id,
+        }))
+        self.assertEqual(deleted.body["folders"], [])
+        self.assertEqual(deleted.body["items"][0]["folder_id"], "")
+
+        loaded = await manager.favorites_api(_QueryRequest())
+        self.assertEqual(loaded.body["items"][0]["model"]["id"], 1060551)
+
+    async def test_first_load_migrates_legacy_local_favorites(self):
+        self.scan_patch.stop()
+        self.scan_patch = mock.patch.object(manager, "_scan_roots", return_value={
+            "items": [{
+                "id": "loras:root:style.safetensors",
+                "root_kind": "loras",
+                "storage_root_id": "root",
+                "relative_path": "style.safetensors",
+                "filename": "style.safetensors",
+                "name": "Legacy Style",
+                "model_id": 42,
+                "favorite": True,
+            }],
+        })
+        self.scan_patch.start()
+
+        loaded = await manager.favorites_api(_QueryRequest())
+
+        self.assertEqual(loaded.status, 200)
+        self.assertEqual(loaded.body["items"][0]["key"], "civitai:lora:42")
+        self.assertTrue(Path(manager._favorites_path()).is_file())
+
+    async def test_downloaded_asset_merges_with_existing_remote_favorite(self):
+        remote = {
+            "asset_kind": "lora",
+            "model_id": 42,
+            "name": "Remote Style",
+            "model": {"id": 42, "name": "Remote Style", "type": "LORA"},
+        }
+        local = {
+            "asset_kind": "lora",
+            "model_id": 42,
+            "version_id": 7,
+            "name": "Local Style",
+            "local": {
+                "asset_id": "loras:root:style.safetensors",
+                "root_kind": "loras",
+                "storage_root_id": "root",
+                "relative_path": "style.safetensors",
+                "filename": "style.safetensors",
+            },
+        }
+
+        await manager.favorite_item_api(_JsonRequest({"favorite": True, "item": remote}))
+        merged = await manager.favorite_item_api(_JsonRequest({"favorite": True, "item": local}))
+
+        self.assertEqual(len(merged.body["items"]), 1)
+        item = merged.body["items"][0]
+        self.assertEqual(item["key"], "civitai:lora:42")
+        self.assertEqual(item["model"]["id"], 42)
+        self.assertEqual(item["local"]["relative_path"], "style.safetensors")
+        self.assertEqual(item["sources"], ["local", "remote"])
+
+
 class ConfigApiAsyncTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.original_cache = manager._CONFIG_CACHE

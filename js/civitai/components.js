@@ -262,10 +262,10 @@ export function renderFileActions(options = {}) {
         <section class="cmgr-file-actions" aria-label="${escapeAttr(t("File Actions"))}">
             <div class="cmgr-section-title cmgr-file-actions-title">${escapeHtml(t("File Actions"))}</div>
             <div class="cmgr-file-action-grid">
-                <button class="cmgr-file-action ${favorite ? "is-active" : ""}" data-action="${escapeAttr(actions.favorite || "favorite-asset")}">
+                ${options.showFavorite === false ? "" : `<button class="cmgr-file-action ${favorite ? "is-active" : ""}" data-action="${escapeAttr(actions.favorite || "favorite-asset")}">
                     <i class="cmgr-file-action-icon is-favorite" aria-hidden="true">★</i>
                     <span><b>${escapeHtml(t(favorite ? "Unfavorite" : "Favorite"))}</b><small>${escapeHtml(t(favorite ? "Remove from favorites" : "Keep this asset easy to find"))}</small></span>
-                </button>
+                </button>`}
                 <button class="cmgr-file-action" data-action="${escapeAttr(actions.open || "open-folder")}">
                     <i class="cmgr-file-action-icon is-folder" aria-hidden="true"></i>
                     <span><b>${escapeHtml(t("Open Folder"))}</b><small>${escapeHtml(t("Show in File Explorer"))}</small></span>
@@ -277,4 +277,123 @@ export function renderFileActions(options = {}) {
             </div>
         </section>
     `;
+}
+
+export function renderFavoriteControls(options = {}) {
+    const favorite = options.favorite === true;
+    const folders = Array.isArray(options.folders) ? options.folders : [];
+    const folderId = String(options.folderId || "");
+    const toggleAction = String(options.toggleAction || "toggle-favorite");
+    const folderAction = String(options.folderAction || "assign-favorite-folder");
+    return `
+        <section class="cmgr-favorite-controls" aria-label="${escapeAttr(t("Favorite"))}">
+            <button class="cmgr-favorite-toggle ${favorite ? "is-active" : ""}" data-action="${escapeAttr(toggleAction)}" type="button">
+                <span aria-hidden="true">${favorite ? "★" : "☆"}</span>
+                <b>${escapeHtml(t(favorite ? "Unfavorite" : "Favorite"))}</b>
+            </button>
+            ${favorite ? `
+                <label class="cmgr-favorite-folder-select">
+                    <span>${escapeHtml(t("Favorite Folder"))}</span>
+                    <select class="cmgr-input" data-action="${escapeAttr(folderAction)}">
+                        <option value="" ${folderId ? "" : "selected"}>${escapeHtml(t("Uncategorized"))}</option>
+                        ${folders.map((folder) => `<option value="${escapeAttr(folder.id)}" ${folderId === String(folder.id) ? "selected" : ""}>${escapeHtml(folder.name)}</option>`).join("")}
+                    </select>
+                </label>
+            ` : ""}
+        </section>
+    `;
+}
+
+export function renderFavoriteFolderSidebar(options = {}) {
+    const folders = Array.isArray(options.folders) ? options.folders : [];
+    const items = Array.isArray(options.items) ? options.items : [];
+    const selectedId = String(options.selectedId || "");
+    const unfiledId = String(options.unfiledId || "__cmgr_unfiled_favorites__");
+    const editor = options.editor && typeof options.editor === "object" ? options.editor : null;
+    const countFor = (folderId) => items.filter((item) => String(item?.folder_id || "") === folderId).length;
+    return `
+        <div class="cmgr-nav-group cmgr-favorite-folder-group">
+            <div class="cmgr-favorite-folder-head">
+                <div class="cmgr-nav-title">${escapeHtml(t("Local Favorites"))}</div>
+                <button class="cmgr-favorite-folder-add" data-favorite-folder-add type="button" title="${escapeAttr(t("New Favorite Folder"))}" aria-label="${escapeAttr(t("New Favorite Folder"))}">＋</button>
+            </div>
+            ${editor ? `
+                <div class="cmgr-favorite-folder-editor" data-favorite-folder-editor data-mode="${escapeAttr(editor.mode || "create")}" data-folder-id="${escapeAttr(editor.id || "")}">
+                    <input class="cmgr-input" data-favorite-folder-name value="${escapeAttr(editor.value || "")}" placeholder="${escapeAttr(t(editor.mode === "rename" ? "Rename Favorite Folder" : "New Favorite Folder"))}" maxlength="80" autocomplete="off" />
+                    <button data-favorite-folder-save type="button" title="${escapeAttr(t("Save"))}">✓</button>
+                    <button data-favorite-folder-cancel type="button" title="${escapeAttr(t("Cancel"))}">×</button>
+                </div>
+            ` : ""}
+            <button class="cmgr-nav-btn ${selectedId ? "" : "active"}" data-favorite-folder="">
+                <span>${escapeHtml(t("All Favorites"))}</span><b>${items.length}</b>
+            </button>
+            <button class="cmgr-nav-btn ${selectedId === unfiledId ? "active" : ""}" data-favorite-folder="${escapeAttr(unfiledId)}">
+                <span>${escapeHtml(t("Uncategorized"))}</span><b>${countFor("")}</b>
+            </button>
+            <div class="cmgr-favorite-folder-list">
+                ${folders.map((folder) => `
+                    <div class="cmgr-favorite-folder-row">
+                        <button class="cmgr-nav-btn ${selectedId === String(folder.id) ? "active" : ""}" data-favorite-folder="${escapeAttr(folder.id)}" title="${escapeAttr(folder.name)}">
+                            <span>${escapeHtml(folder.name)}</span><b>${countFor(String(folder.id))}</b>
+                        </button>
+                        <div class="cmgr-favorite-folder-actions">
+                            <button data-favorite-folder-rename="${escapeAttr(folder.id)}" data-folder-name="${escapeAttr(folder.name)}" type="button" title="${escapeAttr(t("Rename"))}" aria-label="${escapeAttr(t("Rename"))}">✎</button>
+                            <button data-favorite-folder-delete="${escapeAttr(folder.id)}" type="button" title="${escapeAttr(t("Delete"))}" aria-label="${escapeAttr(t("Delete"))}">×</button>
+                        </div>
+                    </div>
+                `).join("")}
+            </div>
+        </div>
+    `;
+}
+
+export function bindFavoriteFolderSidebar(root, callbacks = {}) {
+    if (!root) return;
+    root.querySelectorAll("[data-favorite-folder]").forEach((button) => {
+        button.onclick = () => callbacks.onSelect?.(button.dataset.favoriteFolder || "");
+    });
+    const add = root.querySelector("[data-favorite-folder-add]");
+    if (add) add.onclick = () => callbacks.onEdit?.({ mode: "create", id: "", value: "" });
+    root.querySelectorAll("[data-favorite-folder-rename]").forEach((button) => {
+        button.onclick = (event) => {
+            event.stopPropagation();
+            callbacks.onEdit?.({
+                mode: "rename",
+                id: button.dataset.favoriteFolderRename || "",
+                value: button.dataset.folderName || "",
+            });
+        };
+    });
+    root.querySelectorAll("[data-favorite-folder-delete]").forEach((button) => {
+        button.onclick = (event) => {
+            event.stopPropagation();
+            callbacks.onDelete?.(button.dataset.favoriteFolderDelete || "");
+        };
+    });
+    const editor = root.querySelector("[data-favorite-folder-editor]");
+    const input = editor?.querySelector("[data-favorite-folder-name]");
+    const save = editor?.querySelector("[data-favorite-folder-save]");
+    const cancel = editor?.querySelector("[data-favorite-folder-cancel]");
+    const submit = () => callbacks.onSave?.({
+        mode: editor?.dataset.mode || "create",
+        id: editor?.dataset.folderId || "",
+        value: input?.value || "",
+    });
+    if (save) save.onclick = submit;
+    if (cancel) cancel.onclick = () => callbacks.onEdit?.(null);
+    if (input) {
+        input.onkeydown = (event) => {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                submit();
+            } else if (event.key === "Escape") {
+                event.preventDefault();
+                callbacks.onEdit?.(null);
+            }
+        };
+        requestAnimationFrame(() => {
+            input.focus({ preventScroll: true });
+            input.select();
+        });
+    }
 }

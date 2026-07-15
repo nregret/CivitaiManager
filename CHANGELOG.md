@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- 新增跨远程与本地资源的持久化收藏系统及自定义收藏夹管理。
+- 大管理器收藏视图统一展示 Checkpoint、UNet、LoRA 和 Workflow；LoRA 管理器提供仅 LoRA 的收藏视图。
+- 支持未下载模型收藏、旧本地收藏自动迁移，以及下载后按 Civitai 模型 ID 自动合并。
+
 ## 1.0.0 - 2026-07-14
 
 - 项目统一命名为 `CivitaiManager`。

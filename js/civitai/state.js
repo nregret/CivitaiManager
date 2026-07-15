@@ -29,6 +29,13 @@ export const state = {
     libraryItems: [],
     expandedLocalFolders: {},
     selectedAssetId: "",
+    favoritesLoading: false,
+    favoriteItems: [],
+    favoriteFolders: [],
+    favoriteQuery: "",
+    selectedFavoriteKey: "",
+    selectedFavoriteFolderId: "",
+    favoriteFolderEditor: null,
     downloads: {},
     config: null,
     settingsSaving: false,
@@ -38,5 +45,6 @@ export const state = {
     scroll: {
         discoverResults: 0,
         libraryResults: 0,
+        favoriteResults: 0,
     },
 };

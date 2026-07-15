@@ -9,8 +9,11 @@ import {
 } from "./civitai/constants.js";
 import { apiGet, apiPost, getSearchCache, setSearchCache } from "./civitai/api.js";
 import {
+    bindFavoriteFolderSidebar,
     bindSearchCombo,
     ensureNotificationHost,
+    renderFavoriteControls,
+    renderFavoriteFolderSidebar,
     renderFileActions,
     renderPromoLinks,
     renderSearchCombo,
@@ -18,6 +21,16 @@ import {
     renderToolbarSearchField,
     updateNotificationHost,
 } from "./civitai/components.js";
+import {
+    FAVORITES_UNFILED,
+    favoriteEntryForLocal,
+    favoriteEntryForRemote,
+    favoriteItemForLocal,
+    favoriteItemForRemote,
+    favoriteModel,
+    filterFavoriteItems,
+    localAssetForFavorite,
+} from "./civitai/favorites.js";
 import { t } from "./civitai/i18n.js";
 import {
     createPreviewMedia,
@@ -70,12 +83,20 @@ const popup = {
     libraryItems: [],
     libraryLoading: false,
     selectedAssetId: "",
+    favoritesLoading: false,
+    favoriteItems: [],
+    favoriteFolders: [],
+    favoriteQuery: "",
+    selectedFavoriteKey: "",
+    selectedFavoriteFolderId: "",
+    favoriteFolderEditor: null,
     downloads: {},
     pendingApply: new Map(),
     scroll: {
         nav: 0,
         discover: 0,
         local: 0,
+        favorites: 0,
         applied: 0,
         downloads: 0,
     },
@@ -523,10 +544,129 @@ function closePopup() {
 async function hydratePopup() {
     await Promise.allSettled([
         loadLibrary(false),
+        loadFavorites(false),
         loadDownloads(false),
         loadLoraTaxonomy(),
         popup.remoteItems.length ? Promise.resolve() : searchRemote(true),
     ]);
+}
+
+function applyFavoriteStore(data = {}) {
+    popup.favoriteItems = Array.isArray(data.items) ? data.items : [];
+    popup.favoriteFolders = Array.isArray(data.folders) ? data.folders : [];
+    if (popup.selectedFavoriteKey && !popup.favoriteItems.some((item) => item.key === popup.selectedFavoriteKey)) {
+        popup.selectedFavoriteKey = "";
+    }
+    if (popup.selectedFavoriteFolderId && popup.selectedFavoriteFolderId !== FAVORITES_UNFILED
+        && !popup.favoriteFolders.some((folder) => folder.id === popup.selectedFavoriteFolderId)) {
+        popup.selectedFavoriteFolderId = "";
+    }
+}
+
+async function loadFavorites(shouldRender = true) {
+    popup.favoritesLoading = true;
+    try {
+        applyFavoriteStore(await apiGet("/favorites"));
+    } catch (error) {
+        popup.error = error.message;
+    }
+    popup.favoritesLoading = false;
+    if (shouldRender && overlay?.classList.contains("show")) renderPopup();
+}
+
+function selectedFavorite() {
+    return popup.favoriteItems.find((item) => item.key === popup.selectedFavoriteKey) || null;
+}
+
+function remoteFavorite(model = popup.selectedRemote) {
+    return favoriteEntryForRemote(popup.favoriteItems, model, "lora");
+}
+
+function localFavorite(asset) {
+    return favoriteEntryForLocal(popup.favoriteItems, asset, "lora");
+}
+
+async function setFavoriteItem(item, favorite, folderId) {
+    const payload = { item, favorite };
+    if (folderId !== undefined) payload.folder_id = folderId;
+    const data = await apiPost("/favorites/item", payload);
+    applyFavoriteStore(data);
+    return data;
+}
+
+function refreshFavoriteSurface() {
+    if (popup.tab === "discover" && updateRemoteDetail()) return;
+    if (popup.tab === "local" && updateLocalDetail()) return;
+    renderPopup();
+}
+
+async function toggleRemoteFavorite(model = popup.selectedRemote) {
+    if (!model) return;
+    const existing = remoteFavorite(model);
+    try {
+        await setFavoriteItem(existing || favoriteItemForRemote(model, "lora"), !existing);
+        showToast(t(existing ? "Removed favorite" : "Marked favorite"));
+        refreshFavoriteSurface();
+    } catch (error) {
+        popup.error = error.message;
+        renderPopup();
+    }
+}
+
+async function toggleLocalFavorite(asset) {
+    if (!asset) return;
+    const existing = localFavorite(asset);
+    try {
+        await setFavoriteItem(existing || favoriteItemForLocal(asset, "lora"), !existing);
+        showToast(t(existing ? "Removed favorite" : "Marked favorite"));
+        refreshFavoriteSurface();
+    } catch (error) {
+        popup.error = error.message;
+        renderPopup();
+    }
+}
+
+async function assignFavoriteFolder(item, folderId) {
+    if (!item) return;
+    try {
+        await setFavoriteItem(item, true, folderId || "");
+        showToast(t("Favorite moved"));
+        renderPopup();
+    } catch (error) {
+        popup.error = error.message;
+        renderPopup();
+    }
+}
+
+async function saveFavoriteFolder(editor) {
+    const name = String(editor?.value || "").trim();
+    if (!name) return;
+    try {
+        applyFavoriteStore(await apiPost("/favorites/folder", {
+            action: editor.mode === "rename" ? "rename" : "create",
+            folder_id: editor.id || "",
+            name,
+        }));
+        popup.favoriteFolderEditor = null;
+        showToast(t(editor.mode === "rename" ? "Favorite folder renamed" : "Favorite folder created"));
+        renderPopup();
+    } catch (error) {
+        popup.error = error.message;
+        renderPopup();
+    }
+}
+
+async function deleteFavoriteFolder(folderId) {
+    if (!folderId || !confirm(t("Delete this favorite folder? Favorites inside it will become uncategorized."))) return;
+    try {
+        applyFavoriteStore(await apiPost("/favorites/folder", { action: "delete", folder_id: folderId }));
+        popup.favoriteFolderEditor = null;
+        showToast(t("Favorite folder deleted"));
+        renderPopup();
+    } catch (error) {
+        popup.error = error.message;
+        renderPopup();
+    }
 }
 
 function normalizeTaxonomyItems(value) {
@@ -561,6 +701,7 @@ function loraBaseModelOptions() {
 
 function navCount(tab) {
     if (tab === "local") return popup.libraryItems.length;
+    if (tab === "favorites") return popup.favoriteItems.filter((item) => item.asset_kind === "lora").length;
     if (tab === "applied") return popup.node?._cmgrLoras?.length || 0;
     if (tab === "downloads") {
         return loraDownloads().filter((job) => ACTIVE_DOWNLOAD_STATUSES.has(job.status)).length;
@@ -574,6 +715,7 @@ function renderNav() {
     const items = [
         ["discover", "Discover"],
         ["local", "Local LoRAs"],
+        ["favorites", "Favorites"],
         ["applied", "Applied to Node"],
         ["downloads", "Downloads"],
     ];
@@ -588,6 +730,7 @@ function renderNav() {
             `).join("")}
         </div>
         ${popup.tab === "local" ? renderLocalFolderSidebar() : ""}
+        ${popup.tab === "favorites" ? renderLoraFavoriteSidebar() : ""}
         ${["discover", "local"].includes(popup.tab) ? `
             <div class="cmgr-nav-group cmgr-category-group cmgr-lora-filter-group">
                 <div class="cmgr-nav-title">${escapeHtml(t("Base Model"))}</div>
@@ -669,6 +812,40 @@ function renderNav() {
     bindSearchCombo(nav.querySelector('[data-combo="lora-tag"]'), selectTag);
     const clearTag = nav.querySelector("[data-clear-lora-tag]");
     if (clearTag) clearTag.onclick = () => selectTag("");
+    if (popup.tab === "favorites") bindLoraFavoriteSidebar(nav);
+}
+
+function loraFavoriteItems() {
+    return popup.favoriteItems.filter((item) => item.asset_kind === "lora");
+}
+
+function renderLoraFavoriteSidebar() {
+    return renderFavoriteFolderSidebar({
+        folders: popup.favoriteFolders,
+        items: loraFavoriteItems(),
+        selectedId: popup.selectedFavoriteFolderId,
+        unfiledId: FAVORITES_UNFILED,
+        editor: popup.favoriteFolderEditor,
+    });
+}
+
+function bindLoraFavoriteSidebar(root) {
+    bindFavoriteFolderSidebar(root, {
+        onSelect: (folderId) => {
+            if (popup.selectedFavoriteFolderId === folderId) return;
+            popup.selectedFavoriteFolderId = folderId;
+            popup.selectedFavoriteKey = "";
+            popup.favoriteFolderEditor = null;
+            popup.scroll.favorites = 0;
+            renderPopup({ preserveScroll: false });
+        },
+        onEdit: (editor) => {
+            popup.favoriteFolderEditor = editor;
+            rerenderNavPreservingScroll();
+        },
+        onSave: (editor) => void saveFavoriteFolder(editor),
+        onDelete: (folderId) => void deleteFavoriteFolder(folderId),
+    });
 }
 
 function renderLocalFolderSidebar() {
@@ -786,6 +963,7 @@ function isLocalFolderExpanded(path) {
 function switchTab(tab) {
     popup.tab = tab;
     popup.error = "";
+    if (tab === "favorites") void loadFavorites(true);
     renderPopup();
     if (tab === "local" && !popup.libraryItems.length) void loadLibrary(false);
     if (tab === "downloads") void loadDownloads(true);
@@ -926,6 +1104,8 @@ function renderPopup(options = {}) {
     renderNav();
     const content = popup.tab === "local"
         ? renderLocal()
+        : popup.tab === "favorites"
+            ? renderFavorites()
         : popup.tab === "applied"
             ? renderApplied()
             : popup.tab === "downloads"
@@ -1197,6 +1377,7 @@ function renderRemoteCard(model, index = 0) {
     const media = remotePreviewMedia(model, version);
     const selected = String(popup.selectedRemote?.id || "") === String(model.id || "");
     const installed = findLocalForRemote(model, version);
+    const favorite = remoteFavorite(model);
     const preview = media.url
         ? `<span class="cmgr-media-skeleton" aria-hidden="true"></span>${renderPreview(media, model.name, "", {
             defer: true,
@@ -1209,7 +1390,7 @@ function renderRemoteCard(model, index = 0) {
             ${version.baseModel ? `<div class="cmgr-card-badge">${escapeHtml(version.baseModel)}</div>` : ""}
             <div class="cmgr-card-body">
                 <div class="cmgr-card-title">${escapeHtml(model.name || "Untitled")}</div>
-                <div class="cmgr-card-tags">${installed ? `<span class="installed">${escapeHtml(t("Installed"))}</span>` : ""}</div>
+                <div class="cmgr-card-tags">${favorite ? `<span class="favorite">${escapeHtml(t("Favorite"))}</span>` : ""}${installed ? `<span class="installed">${escapeHtml(t("Installed"))}</span>` : ""}</div>
             </div>
         </article>
     `;
@@ -1225,12 +1406,13 @@ function renderRemoteDetail() {
     const raw = media.rawUrl || rawPreview(model, version);
     const local = findLocalForRemote(model, version);
     const pending = pendingForRemote(model, version);
+    const favorite = remoteFavorite(model);
     const words = Array.isArray(version.trainedWords) ? version.trainedWords : [];
     const stats = modelStats(model, version);
     const modelUrl = `https://civitai.red/models/${encodeURIComponent(model.id || "")}${version.id ? `?modelVersionId=${encodeURIComponent(version.id)}` : ""}`;
     return `
         <div class="cmgr-detail-scroll">
-            <div class="cmgr-detail-preview cmgr-lora-detail-preview">${renderDetailPreviewMedia(media, model.name, raw)}</div>
+            <div class="cmgr-detail-preview cmgr-lora-detail-preview" data-preview-key="${escapeAttr(`${media.type || "image"}:${media.url || ""}`)}">${renderDetailPreviewMedia(media, model.name, raw)}</div>
             <div class="cmgr-detail-head">
                 <div>
                     <a class="cmgr-detail-title-link" href="${escapeAttr(modelUrl)}" target="_blank" rel="noopener noreferrer"><h2>${escapeHtml(model.name || "Untitled")}</h2><span class="cmgr-external-icon" aria-hidden="true">↗</span></a>
@@ -1242,6 +1424,13 @@ function renderRemoteDetail() {
                 <span><b>♥ ${escapeHtml(formatStatCount(stats.likeCount))}</b><small>${escapeHtml(t("Likes"))}</small></span>
                 <span><b>${escapeHtml(version.baseModel || "Other")}</b><small>${escapeHtml(t("Base Model"))}</small></span>
             </div>
+            ${renderFavoriteControls({
+                favorite: Boolean(favorite),
+                folders: popup.favoriteFolders,
+                folderId: favorite?.folder_id || "",
+                toggleAction: "favorite-remote-lora",
+                folderAction: "assign-remote-favorite-folder",
+            })}
             <label class="cmgr-label">${escapeHtml(t("Version"))}</label>
             <select class="cmgr-input cmgr-full" data-field="remote-version">
                 ${versionsFor(model).map((item) => `<option value="${escapeAttr(item.id)}" ${String(item.id) === String(version.id) ? "selected" : ""}>${escapeHtml(`${item.name || item.id} · ${item.baseModel || "Other"}`)}</option>`).join("")}
@@ -1268,6 +1457,132 @@ function renderRemoteDetail() {
             <div class="cmgr-description">${sanitizeDescriptionHtml(model.description || version.description || "")}</div>
         </div>
     `;
+}
+
+function filteredLoraFavorites() {
+    return filterFavoriteItems(popup.favoriteItems, {
+        assetKind: "lora",
+        folderId: popup.selectedFavoriteFolderId,
+        query: popup.favoriteQuery,
+    });
+}
+
+function renderFavorites() {
+    const item = selectedFavorite();
+    const toolbar = renderSearchToolbar({
+        title: t("Favorites"),
+        subtitle: "LoRA",
+        className: "cmgr-lora-toolbar cmgr-favorites-toolbar",
+        searchHtml: renderToolbarSearchField({
+            value: popup.favoriteQuery,
+            inputAttrs: 'data-field="favorite-query"',
+            className: "cmgr-lora-search",
+            placeholder: t("Search favorites..."),
+            clearAction: "clear-lora-favorite-search",
+        }),
+        actionsHtml: `<span class="cmgr-favorite-total">${filteredLoraFavorites().length}</span>`,
+    });
+    return `
+        <section class="cmgr-page cmgr-lora-page cmgr-lora-favorites-page">
+            ${toolbar}
+            <div class="cmgr-split has-detail cmgr-lora-split">
+                <div class="cmgr-results cmgr-lora-results">${renderFavoriteResults()}</div>
+                <aside class="cmgr-detail cmgr-lora-detail">${item ? renderFavoriteDetail(item) : renderEmptyDetail(t("Select a favorite"), t("Favorite details and available actions will stay here."), "favorites")}</aside>
+            </div>
+        </section>
+    `;
+}
+
+function renderFavoriteResults() {
+    const items = filteredLoraFavorites();
+    if (popup.favoritesLoading && !items.length) return renderSkeletons();
+    return items.length
+        ? items.map(renderFavoriteCard).join("")
+        : `<div class="cmgr-empty">${escapeHtml(t("No favorites yet."))}</div>`;
+}
+
+function renderFavoriteCard(item, index = 0) {
+    const model = favoriteModel(item);
+    const local = localAssetForFavorite(item, popup.libraryItems);
+    const media = model ? remotePreviewMedia(model, versionsFor(model)[0]) : createPreviewMedia(item.preview_url || local?.thumb_url || "", 450);
+    const preview = media.url
+        ? `<span class="cmgr-media-skeleton" aria-hidden="true"></span>${renderPreview(media, item.name, "", {
+            defer: true,
+            priority: index < HIGH_PRIORITY_PREVIEW_LOADS ? "high" : "auto",
+        })}`
+        : renderUnavailablePreview(media.emptyText);
+    return `
+        <article class="cmgr-card cmgr-lora-card cmgr-favorite-card ${popup.selectedFavoriteKey === item.key ? "selected" : ""}" data-favorite-key="${escapeAttr(item.key)}">
+            <div class="cmgr-thumb">${preview}</div>
+            <div class="cmgr-card-badge">${escapeHtml(item.base_model || "LoRA")}</div>
+            <div class="cmgr-card-body">
+                <div class="cmgr-card-title">${escapeHtml(item.name || "Untitled")}</div>
+                <div class="cmgr-card-tags">${local ? `<span class="installed">${escapeHtml(t("Installed"))}</span>` : ""}</div>
+            </div>
+        </article>
+    `;
+}
+
+function renderFavoriteDetail(item) {
+    const model = favoriteModel(item);
+    if (model) return renderRemoteDetail();
+    const local = localAssetForFavorite(item, popup.libraryItems);
+    if (local) return renderLocalDetail(local);
+    return `
+        <div class="cmgr-detail-scroll">
+            <div class="cmgr-detail-preview cmgr-lora-detail-preview" data-preview-key="${escapeAttr(`image:${item.preview_url || ""}`)}">${renderDetailPreviewMedia(item.preview_url || "", item.name)}</div>
+            <div class="cmgr-detail-head"><div><h2>${escapeHtml(item.name || "Untitled")}</h2><p>LoRA · ${escapeHtml(item.creator || t("Unknown creator"))}</p></div></div>
+            ${renderFavoriteControls({
+                favorite: true,
+                folders: popup.favoriteFolders,
+                folderId: item.folder_id,
+                toggleAction: "remove-selected-favorite",
+                folderAction: "assign-selected-favorite-folder",
+            })}
+        </div>
+    `;
+}
+
+function updateFavoriteDetail() {
+    if (popup.tab !== "favorites") return false;
+    const detail = popupBody?.querySelector(".cmgr-lora-detail");
+    if (!detail) return false;
+    popupBody.querySelectorAll("[data-favorite-key]").forEach((card) => {
+        card.classList.toggle("selected", card.dataset.favoriteKey === popup.selectedFavoriteKey);
+    });
+    const item = selectedFavorite();
+    const previousPreview = item && detail.dataset.favoriteKey === item.key
+        ? detail.querySelector(".cmgr-lora-detail-preview")
+        : null;
+    previousPreview?.remove();
+    detail.innerHTML = item
+        ? renderFavoriteDetail(item)
+        : renderEmptyDetail(t("Select a favorite"), t("Favorite details and available actions will stay here."), "favorites");
+    const nextPreview = detail.querySelector(".cmgr-lora-detail-preview");
+    if (previousPreview && nextPreview && previousPreview.dataset.previewKey === nextPreview.dataset.previewKey) {
+        nextPreview.replaceWith(previousPreview);
+    }
+    if (item) detail.dataset.favoriteKey = item.key;
+    else delete detail.dataset.favoriteKey;
+    bindPopupEvents();
+    return true;
+}
+
+function selectFavoriteItem(item) {
+    popup.selectedFavoriteKey = item.key;
+    const model = favoriteModel(item);
+    if (model) {
+        popup.selectedRemote = model;
+        const version = versionsFor(model)[0] || {};
+        popup.selectedVersionId = String(version.id || "");
+        popup.selectedFileName = String(filesFor(version).find((file) => file.primary)?.name || filesFor(version)[0]?.name || "");
+        popup.selectedAssetId = "";
+    } else {
+        const local = localAssetForFavorite(item, popup.libraryItems);
+        popup.selectedRemote = null;
+        popup.selectedAssetId = local?.id || "";
+    }
+    if (!updateFavoriteDetail()) renderPopup();
 }
 
 function renderEmptyDetail(title, description, kind = "model") {
@@ -1540,6 +1855,7 @@ function filteredLocalItems() {
 }
 
 function renderLocalCard(asset, index = 0) {
+    const favorite = localFavorite(asset);
     return `
         <article class="cmgr-card cmgr-lora-card asset ${popup.selectedAssetId === asset.id ? "selected" : ""}" data-local-id="${escapeAttr(asset.id)}" data-preview-key="${escapeAttr(asset.thumb_url || "")}">
             <div class="cmgr-thumb">${renderPreview(asset.thumb_url, asset.name, "", { defer: index >= INITIAL_PREVIEW_LOADS, priority: index < HIGH_PRIORITY_PREVIEW_LOADS ? "high" : "auto" })}</div>
@@ -1547,7 +1863,7 @@ function renderLocalCard(asset, index = 0) {
             <div class="cmgr-card-body">
                 <div class="cmgr-card-title">${escapeHtml(asset.name || asset.filename)}</div>
                 <div class="cmgr-card-tags">
-                    ${asset.favorite ? `<span class="favorite">${escapeHtml(t("Favorite"))}</span>` : ""}
+                    ${favorite ? `<span class="favorite">${escapeHtml(t("Favorite"))}</span>` : ""}
                     ${isAppliedAsset(asset) ? `<span class="installed">${escapeHtml(t("Applied"))}</span>` : ""}
                 </div>
             </div>
@@ -1614,6 +1930,7 @@ function splitLocalPath(value) {
 
 function renderLocalDetail(asset) {
     const matched = Boolean(asset.model_id || asset.metadata_match_status === "matched");
+    const favorite = localFavorite(asset);
     const civitaiUrl = asset.civitai_url || (asset.model_id ? `https://civitai.red/models/${encodeURIComponent(asset.model_id)}${asset.version_id ? `?modelVersionId=${encodeURIComponent(asset.version_id)}` : ""}` : "");
     return `
         <div class="cmgr-detail-scroll">
@@ -1637,8 +1954,16 @@ function renderLocalDetail(asset) {
             <div class="cmgr-trained">${asset.trained_words?.length ? asset.trained_words.slice(0, 16).map((word) => `<button data-copy="${escapeAttr(word)}">${escapeHtml(word)}</button>`).join("") : `<span>${escapeHtml(t("No trained words cached."))}</span>`}</div>
             <div class="cmgr-lora-detail-actions">
                 <button class="cmgr-primary cmgr-full" data-action="apply-local">${escapeHtml(t(isAppliedAsset(asset) ? "Applied" : "Apply to Node"))}</button>
+                ${renderFavoriteControls({
+                    favorite: Boolean(favorite),
+                    folders: popup.favoriteFolders,
+                    folderId: favorite?.folder_id || "",
+                    toggleAction: "favorite-local",
+                    folderAction: "assign-local-favorite-folder",
+                })}
                 ${renderFileActions({
-                    favorite: asset.favorite,
+                    favorite: Boolean(favorite),
+                    showFavorite: false,
                     actions: { favorite: "favorite-local", open: "open-local-folder", delete: "delete-local" },
                 })}
             </div>
@@ -1743,9 +2068,9 @@ async function manageSelectedAsset(action) {
             await loadLibrary(true, false);
             showToast(t(data.matched ? "Civitai metadata and preview updated" : "No Civitai match found; SHA256 saved"));
         } else if (action === "favorite") {
-            await apiPost("/asset/favorite", { ...assetPayload(asset), favorite: !asset.favorite });
-            await loadLibrary(false, false);
-            showToast(t(asset.favorite ? "Removed favorite" : "Marked favorite"));
+            const existing = localFavorite(asset);
+            await setFavoriteItem(existing || favoriteItemForLocal(asset, "lora"), !existing);
+            showToast(t(existing ? "Removed favorite" : "Marked favorite"));
         } else if (action === "open") {
             await apiPost("/asset/open-folder", assetPayload(asset));
             showToast(t("Folder opened"));
@@ -1976,6 +2301,13 @@ async function retryDownload(taskId) {
 
 function bindPopupEvents() {
     bindLocalFolderControls(popupBody);
+    popupBody?.querySelectorAll("[data-favorite-key]").forEach((card) => {
+        card.onclick = () => {
+            if (card.dataset.favoriteKey === popup.selectedFavoriteKey) return;
+            const item = popup.favoriteItems.find((entry) => entry.key === card.dataset.favoriteKey);
+            if (item) selectFavoriteItem(item);
+        };
+    });
     popupBody?.querySelectorAll("[data-remote-id]").forEach((card) => {
         card.onclick = () => {
             const model = popup.remoteItems.find((item) => String(item.id) === String(card.dataset.remoteId));
@@ -2009,12 +2341,36 @@ function bindPopupEvents() {
         void searchRemote(true);
     };
 
+    const favoriteQuery = popupBody?.querySelector('[data-field="favorite-query"]');
+    const clearFavoriteQuery = popupBody?.querySelector('[data-action="clear-lora-favorite-search"]');
+    const updateFavoriteResults = () => {
+        const results = popupBody?.querySelector(".cmgr-lora-favorites-page .cmgr-lora-results");
+        if (!results) return;
+        results.innerHTML = renderFavoriteResults();
+        bindPopupEvents();
+        schedulePopupLazyPreviews();
+    };
+    if (favoriteQuery) favoriteQuery.oninput = () => {
+        popup.favoriteQuery = favoriteQuery.value;
+        if (clearFavoriteQuery) clearFavoriteQuery.hidden = !popup.favoriteQuery;
+        updateFavoriteResults();
+    };
+    if (clearFavoriteQuery) clearFavoriteQuery.onclick = () => {
+        popup.favoriteQuery = "";
+        if (favoriteQuery) {
+            favoriteQuery.value = "";
+            favoriteQuery.focus();
+        }
+        clearFavoriteQuery.hidden = true;
+        updateFavoriteResults();
+    };
+
     const version = popupBody?.querySelector('[data-field="remote-version"]');
     if (version) version.onchange = () => {
         popup.selectedVersionId = version.value;
         const nextVersion = selectedVersion();
         popup.selectedFileName = String(filesFor(nextVersion).find((item) => item.primary)?.name || filesFor(nextVersion)[0]?.name || "");
-        if (!updateRemoteDetail()) renderPopup();
+        if (!updateRemoteDetail() && !updateFavoriteDetail()) renderPopup();
     };
     const file = popupBody?.querySelector('[data-field="remote-file"]');
     if (file) file.onchange = () => { popup.selectedFileName = file.value; };
@@ -2025,6 +2381,21 @@ function bindPopupEvents() {
     };
     const download = popupBody?.querySelector('[data-action="download-apply"]');
     if (download) download.onclick = () => void downloadAndApply();
+    const favoriteRemote = popupBody?.querySelector('[data-action="favorite-remote-lora"]');
+    if (favoriteRemote) favoriteRemote.onclick = () => void toggleRemoteFavorite();
+    const remoteFavoriteFolder = popupBody?.querySelector('[data-action="assign-remote-favorite-folder"]');
+    if (remoteFavoriteFolder) remoteFavoriteFolder.onchange = () => void assignFavoriteFolder(remoteFavorite(), remoteFavoriteFolder.value);
+    const selectedFavoriteItem = selectedFavorite();
+    const removeSelectedFavorite = popupBody?.querySelector('[data-action="remove-selected-favorite"]');
+    if (removeSelectedFavorite) removeSelectedFavorite.onclick = () => void setFavoriteItem(selectedFavoriteItem, false).then(() => {
+        showToast(t("Removed favorite"));
+        renderPopup();
+    }).catch((error) => {
+        popup.error = error.message;
+        renderPopup();
+    });
+    const selectedFavoriteFolder = popupBody?.querySelector('[data-action="assign-selected-favorite-folder"]');
+    if (selectedFavoriteFolder) selectedFavoriteFolder.onchange = () => void assignFavoriteFolder(selectedFavoriteItem, selectedFavoriteFolder.value);
     popupBody?.querySelectorAll("[data-copy]").forEach((button) => {
         button.onclick = async () => {
             try {
@@ -2077,6 +2448,11 @@ function bindPopupEvents() {
         const button = popupBody?.querySelector(`[data-action="${selector}"]`);
         if (button) button.onclick = () => void manageSelectedAsset(action);
     });
+    const localFavoriteFolder = popupBody?.querySelector('[data-action="assign-local-favorite-folder"]');
+    if (localFavoriteFolder) {
+        const asset = popup.libraryItems.find((item) => item.id === popup.selectedAssetId);
+        localFavoriteFolder.onchange = () => void assignFavoriteFolder(localFavorite(asset), localFavoriteFolder.value);
+    }
 
     popupBody?.querySelectorAll("[data-applied-enabled]").forEach((input) => {
         input.onchange = () => {

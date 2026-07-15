@@ -97,6 +97,7 @@ _TAXONOMY_CACHE: dict[str, dict[str, Any]] = {}
 _TAXONOMY_LOCK = threading.Lock()
 _SEARCH_RESULT_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
 _SEARCH_RESULT_CACHE_LOCK = threading.Lock()
+_FAVORITES_LOCK = threading.Lock()
 _LIBRARY_INDEX = LibraryIndex(ttl_seconds=30)
 
 
@@ -145,6 +146,10 @@ def _plugin_data_dir() -> str:
 
 def _config_path() -> str:
     return os.path.join(_plugin_data_dir(), "config.json")
+
+
+def _favorites_path() -> str:
+    return os.path.join(_plugin_data_dir(), "favorites.json")
 
 
 def _default_workflow_dir() -> str:
@@ -228,6 +233,254 @@ def _public_config(config: dict[str, Any]) -> dict[str, Any]:
     public["api_key_set"] = bool(config.get("civitai_api_key"))
     public["roots"] = _root_display()
     return public
+
+
+def _favorite_asset_kind(root_kind: Any, fallback: Any = "") -> str:
+    normalized_root = str(root_kind or "").strip().lower()
+    kind = ROOT_KIND_FAMILIES.get(normalized_root, str(fallback or "").strip().lower())
+    if kind not in {"checkpoint", "lora", "workflow"}:
+        raise ValueError("Invalid favorite asset kind")
+    return kind
+
+
+def _favorite_item_key(item: dict[str, Any]) -> str:
+    model = item.get("model") if isinstance(item.get("model"), dict) else {}
+    local = item.get("local") if isinstance(item.get("local"), dict) else {}
+    asset_kind = _favorite_asset_kind(
+        item.get("root_kind") or local.get("root_kind"),
+        item.get("asset_kind"),
+    )
+    model_id = str(item.get("model_id") or model.get("id") or "").strip()
+    if model_id:
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", model_id):
+            raise ValueError("Invalid favorite model id")
+        return f"civitai:{asset_kind}:{model_id}"
+    root_kind = str(item.get("root_kind") or local.get("root_kind") or "").strip().lower()
+    relative_path = str(item.get("relative_path") or local.get("relative_path") or "").strip().replace("\\", "/")
+    storage_root_id = str(item.get("storage_root_id") or local.get("storage_root_id") or "").strip()
+    if not root_kind or not relative_path:
+        key = str(item.get("key") or "").strip()
+        if re.fullmatch(r"[A-Za-z0-9:._-]{1,200}", key):
+            return key
+        raise ValueError("Favorite requires a Civitai model id or local asset path")
+    digest = hashlib.sha256(f"{root_kind}\0{storage_root_id}\0{relative_path}".encode("utf-8")).hexdigest()[:24]
+    return f"local:{asset_kind}:{digest}"
+
+
+def _normalize_favorite_item(item: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        raise ValueError("Favorite item must be an object")
+    model = item.get("model") if isinstance(item.get("model"), dict) else {}
+    local = item.get("local") if isinstance(item.get("local"), dict) else {}
+    root_kind = str(item.get("root_kind") or local.get("root_kind") or "").strip().lower()
+    asset_kind = _favorite_asset_kind(root_kind, item.get("asset_kind"))
+    model_id = str(item.get("model_id") or model.get("id") or "").strip()
+    name = str(item.get("name") or model.get("name") or local.get("name") or "").strip()[:300]
+    if not name:
+        raise ValueError("Favorite name is required")
+    source = "remote" if model else "local"
+    sources = {
+        str(value).strip().lower()
+        for value in (item.get("sources") if isinstance(item.get("sources"), list) else [item.get("source"), source])
+        if str(value or "").strip().lower() in {"local", "remote"}
+    }
+    if source:
+        sources.add(source)
+    normalized_local = {}
+    if root_kind and str(item.get("relative_path") or local.get("relative_path") or "").strip():
+        normalized_local = {
+            "asset_id": str(item.get("asset_id") or local.get("asset_id") or "")[:500],
+            "root_kind": root_kind,
+            "storage_root_id": str(item.get("storage_root_id") or local.get("storage_root_id") or "")[:200],
+            "relative_path": str(item.get("relative_path") or local.get("relative_path") or "").replace("\\", "/")[:1000],
+            "filename": str(item.get("filename") or local.get("filename") or "")[:300],
+        }
+    now = _now()
+    normalized = {
+        "key": "",
+        "asset_kind": asset_kind,
+        "source": source,
+        "sources": sorted(sources),
+        "model_id": model_id,
+        "version_id": str(item.get("version_id") or "")[:100],
+        "name": name,
+        "creator": str(item.get("creator") or (model.get("creator") or {}).get("username") or "")[:200],
+        "base_model": str(item.get("base_model") or "")[:200],
+        "type": str(item.get("type") or model.get("type") or asset_kind)[:100],
+        "preview_url": str(item.get("preview_url") or item.get("thumb_url") or "")[:4000],
+        "civitai_url": str(item.get("civitai_url") or "")[:2000],
+        "folder_id": str(item.get("folder_id") or "")[:100],
+        "model": model,
+        "local": normalized_local,
+        "created_at": int(item.get("created_at") or now),
+        "updated_at": int(item.get("updated_at") or now),
+    }
+    normalized["key"] = _favorite_item_key(normalized)
+    return normalized
+
+
+def _favorite_item_from_asset(asset: dict[str, Any]) -> dict[str, Any]:
+    root_kind = str(asset.get("root_kind") or "")
+    return _normalize_favorite_item({
+        "asset_kind": _favorite_asset_kind(root_kind),
+        "source": "local",
+        "model_id": asset.get("model_id") or "",
+        "version_id": asset.get("version_id") or "",
+        "name": asset.get("name") or asset.get("filename") or "Local asset",
+        "creator": asset.get("creator") or "",
+        "base_model": asset.get("base_model") or "",
+        "type": root_kind,
+        "preview_url": asset.get("thumb_url") or "",
+        "civitai_url": asset.get("civitai_url") or "",
+        "local": {
+            "asset_id": asset.get("id") or "",
+            "root_kind": root_kind,
+            "storage_root_id": asset.get("storage_root_id") or "",
+            "relative_path": asset.get("relative_path") or "",
+            "filename": asset.get("filename") or "",
+        },
+    })
+
+
+def _empty_favorite_store() -> dict[str, Any]:
+    return {"version": 1, "folders": [], "items": [], "updated_at": _now()}
+
+
+def _normalize_favorite_store(data: Any) -> dict[str, Any]:
+    store = _empty_favorite_store()
+    if not isinstance(data, dict):
+        return store
+    folders = []
+    seen_folder_ids: set[str] = set()
+    for raw in data.get("folders") if isinstance(data.get("folders"), list) else []:
+        if not isinstance(raw, dict):
+            continue
+        folder_id = str(raw.get("id") or "").strip()
+        name = str(raw.get("name") or "").strip()[:80]
+        if not folder_id or folder_id in seen_folder_ids or not name:
+            continue
+        seen_folder_ids.add(folder_id)
+        folders.append({
+            "id": folder_id[:100],
+            "name": name,
+            "created_at": int(raw.get("created_at") or _now()),
+            "updated_at": int(raw.get("updated_at") or _now()),
+        })
+    items = []
+    seen_item_keys: set[str] = set()
+    for raw in data.get("items") if isinstance(data.get("items"), list) else []:
+        try:
+            item = _normalize_favorite_item(raw)
+        except ValueError:
+            continue
+        if item["key"] in seen_item_keys:
+            continue
+        seen_item_keys.add(item["key"])
+        if item["folder_id"] not in seen_folder_ids:
+            item["folder_id"] = ""
+        items.append(item)
+    store.update({
+        "folders": folders,
+        "items": items,
+        "updated_at": int(data.get("updated_at") or _now()),
+    })
+    return store
+
+
+def _write_favorites_unlocked(store: dict[str, Any]) -> None:
+    path = _favorites_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump(store, handle, indent=2, ensure_ascii=False)
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+def _load_favorites_unlocked() -> dict[str, Any]:
+    path = _favorites_path()
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                return _normalize_favorite_store(json.load(handle))
+        except Exception as exc:
+            print(f"[CivitaiManager] Failed to read favorites: {exc}")
+            return _empty_favorite_store()
+    store = _empty_favorite_store()
+    try:
+        snapshot = _scan_roots(False)
+        migrated = []
+        for asset in snapshot.get("items") if isinstance(snapshot, dict) else []:
+            if not isinstance(asset, dict) or not asset.get("favorite"):
+                continue
+            try:
+                migrated.append(_favorite_item_from_asset(asset))
+            except ValueError:
+                continue
+        store["items"] = migrated
+    except Exception as exc:
+        print(f"[CivitaiManager] Failed to migrate legacy favorites: {exc}")
+    _write_favorites_unlocked(store)
+    return store
+
+
+def _favorite_store_response(store: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_favorite_store(store)
+    normalized["folders"].sort(key=lambda folder: (folder["name"].lower(), folder["id"]))
+    normalized["items"].sort(key=lambda item: (-int(item.get("updated_at") or 0), item["name"].lower()))
+    return normalized
+
+
+def _load_favorites() -> dict[str, Any]:
+    with _FAVORITES_LOCK:
+        return _favorite_store_response(_load_favorites_unlocked())
+
+
+def _mutate_favorite_item(item: dict[str, Any], favorite: bool, folder_id: str | None = None) -> dict[str, Any]:
+    normalized = _normalize_favorite_item(item)
+    with _FAVORITES_LOCK:
+        store = _load_favorites_unlocked()
+        by_key = {entry["key"]: entry for entry in store["items"]}
+        existing = by_key.get(normalized["key"])
+        if favorite:
+            merged = {**(existing or {}), **normalized}
+            if existing and existing.get("model") and not normalized.get("model"):
+                merged["model"] = existing["model"]
+            if existing and existing.get("local") and not normalized.get("local"):
+                merged["local"] = existing["local"]
+            sources = set(existing.get("sources") or []) if existing else set()
+            sources.update(normalized.get("sources") or [])
+            merged["sources"] = sorted(sources)
+            merged["source"] = "remote" if merged.get("model") else "local"
+            merged["created_at"] = int(existing.get("created_at") or _now()) if existing else _now()
+            merged["updated_at"] = _now()
+            if folder_id is None:
+                merged["folder_id"] = str(existing.get("folder_id") or "") if existing else ""
+            else:
+                valid_folder_ids = {folder["id"] for folder in store["folders"]}
+                if folder_id and folder_id not in valid_folder_ids:
+                    raise ValueError("Favorite folder not found")
+                merged["folder_id"] = folder_id
+            by_key[normalized["key"]] = merged
+        else:
+            by_key.pop(normalized["key"], None)
+        store["items"] = list(by_key.values())
+        store["updated_at"] = _now()
+        _write_favorites_unlocked(store)
+        return _favorite_store_response(store)
+
+
+def _favorite_folder_name(value: Any) -> str:
+    name = re.sub(r"[\x00-\x1f]+", " ", str(value or "")).strip()
+    if not name:
+        raise ValueError("Favorite folder name is required")
+    return name[:80]
 
 
 def _read_json_url(url: str, api_key: str | None = None, timeout: int = 30, quiet: bool = False) -> dict[str, Any] | None:
@@ -2051,6 +2304,109 @@ async def library_api(request: web.Request) -> web.Response:
         return web.json_response({"roots": _root_display(), "items": [], "error": str(exc)}, status=500)
 
 
+def _update_local_favorite_metadata(item: dict[str, Any], favorite: bool) -> None:
+    local = item.get("local") if isinstance(item.get("local"), dict) else {}
+    root_kind = str(local.get("root_kind") or "")
+    relative_path = str(local.get("relative_path") or "")
+    if not root_kind or not relative_path:
+        return
+    try:
+        abs_path = _resolve_asset_path(root_kind, relative_path, local.get("storage_root_id"))
+    except ValueError:
+        return
+    if not os.path.isfile(abs_path):
+        return
+    status, metadata = _metadata_for_asset(abs_path, root_kind)
+    if status == "missing":
+        metadata = {
+            "source": "local",
+            "name": item.get("name") or os.path.splitext(os.path.basename(abs_path))[0],
+            "resolution": {"root_kind": root_kind, "relative_path": relative_path},
+        }
+    metadata["favorite"] = favorite
+    metadata["favorite_updated_at"] = _now()
+    _write_asset_metadata(abs_path, root_kind, metadata)
+    _LIBRARY_INDEX.invalidate()
+
+
+async def favorites_api(_request: web.Request) -> web.Response:
+    try:
+        return web.json_response(await asyncio.to_thread(_load_favorites))
+    except Exception as exc:
+        return web.json_response({"folders": [], "items": [], "error": str(exc)}, status=500)
+
+
+async def favorite_item_api(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+        if not isinstance(body, dict) or not isinstance(body.get("item"), dict):
+            raise ValueError("Favorite item is required")
+        favorite = _config_bool(body.get("favorite"), "favorite", True)
+        folder_id = str(body.get("folder_id") or "") if "folder_id" in body else None
+        normalized = _normalize_favorite_item(body["item"])
+        store = await asyncio.to_thread(_mutate_favorite_item, normalized, favorite, folder_id)
+        await asyncio.to_thread(_update_local_favorite_metadata, normalized, favorite)
+        return web.json_response({"success": True, **store})
+    except ValueError as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=500)
+
+
+def _mutate_favorite_folder(action: str, folder_id: str, name: str) -> dict[str, Any]:
+    with _FAVORITES_LOCK:
+        store = _load_favorites_unlocked()
+        folders = store["folders"]
+        if action == "create":
+            clean_name = _favorite_folder_name(name)
+            if any(folder["name"].casefold() == clean_name.casefold() for folder in folders):
+                raise ValueError("Favorite folder already exists")
+            folders.append({
+                "id": uuid.uuid4().hex,
+                "name": clean_name,
+                "created_at": _now(),
+                "updated_at": _now(),
+            })
+        elif action == "rename":
+            clean_name = _favorite_folder_name(name)
+            folder = next((entry for entry in folders if entry["id"] == folder_id), None)
+            if not folder:
+                raise ValueError("Favorite folder not found")
+            if any(entry["id"] != folder_id and entry["name"].casefold() == clean_name.casefold() for entry in folders):
+                raise ValueError("Favorite folder already exists")
+            folder["name"] = clean_name
+            folder["updated_at"] = _now()
+        elif action == "delete":
+            if not any(folder["id"] == folder_id for folder in folders):
+                raise ValueError("Favorite folder not found")
+            store["folders"] = [folder for folder in folders if folder["id"] != folder_id]
+            for item in store["items"]:
+                if item.get("folder_id") == folder_id:
+                    item["folder_id"] = ""
+                    item["updated_at"] = _now()
+        else:
+            raise ValueError("Invalid favorite folder action")
+        store["updated_at"] = _now()
+        _write_favorites_unlocked(store)
+        return _favorite_store_response(store)
+
+
+async def favorite_folder_api(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("Favorite folder payload must be an object")
+        action = str(body.get("action") or "").strip().lower()
+        folder_id = str(body.get("folder_id") or "").strip()
+        name = str(body.get("name") or "")
+        store = await asyncio.to_thread(_mutate_favorite_folder, action, folder_id, name)
+        return web.json_response({"success": True, **store})
+    except ValueError as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=500)
+
+
 async def local_preview_api(request: web.Request) -> web.StreamResponse:
     try:
         root_kind = request.query.get("root_kind", "")
@@ -2264,6 +2620,26 @@ async def favorite_asset_api(request: web.Request) -> web.Response:
         metadata["favorite"] = favorite
         metadata["favorite_updated_at"] = _now()
         _write_asset_metadata(abs_path, root_kind, metadata)
+        model_id, version_id = _civitai_ids_from_metadata(metadata)
+        resolution = metadata.get("resolution") if isinstance(metadata.get("resolution"), dict) else {}
+        favorite_item = _normalize_favorite_item({
+            "asset_kind": _favorite_asset_kind(root_kind),
+            "source": "local",
+            "model_id": model_id,
+            "version_id": version_id,
+            "name": metadata.get("name") or os.path.splitext(os.path.basename(abs_path))[0],
+            "creator": metadata.get("creator") or "",
+            "base_model": metadata.get("base_model") or resolution.get("base_model_dir") or "",
+            "type": root_kind,
+            "civitai_url": metadata.get("civitai_url") or "",
+            "local": {
+                "root_kind": root_kind,
+                "storage_root_id": body.get("storage_root_id") or "",
+                "relative_path": rel_path,
+                "filename": os.path.basename(abs_path),
+            },
+        })
+        _mutate_favorite_item(favorite_item, favorite)
         _LIBRARY_INDEX.invalidate()
         return web.json_response({"success": True, "favorite": favorite})
     except ValueError as exc:

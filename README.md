@@ -8,6 +8,7 @@
 - Downloads：按照基础模型和分类自动生成保存路径，并保存元数据与预览图。
 - Downloads 支持取消和重试；历史写入用户目录，ComfyUI 重启后仍可查看。
 - Library：扫描本地模型库，支持移动、重命名、收藏、删除和通过 SHA256 补全元数据。
+- Favorites：远程模型无需下载即可收藏；大管理器统一展示 Checkpoint、UNet、LoRA 与 Workflow，LoRA 管理器只展示 LoRA。支持新建、重命名、删除收藏夹及移动收藏条目。
 - Settings：配置 API Key、NSFW、Workflow 目录和伴随文件保存选项。
 - Multi LoRA Loader：按顺序启用和调整多个 LoRA；节点内的精简 LoRA 管理器支持搜索、下载后自动应用、本地管理和下载任务控制。
 
@@ -21,7 +22,7 @@ git clone https://github.com/nregret/CivitaiManager.git
 
 然后重启 ComfyUI。扩展只使用 Python 标准库以及 ComfyUI 已提供的 `aiohttp`、`folder_paths` 和 `PromptServer`，不需要额外运行时依赖。
 
-配置保存在 ComfyUI 用户目录下的 `civitai_manager/config.json`。API Key 不会通过配置读取接口返回给浏览器。
+配置保存在 ComfyUI 用户目录下的 `civitai_manager/config.json`，收藏与自定义收藏夹保存在同目录的 `favorites.json`，更新或重装插件不会覆盖。API Key 不会通过配置读取接口返回给浏览器。
 
 为兼容既有安装与用户数据，内部 HTTP 路由 `/civitai-manager/api` 以及用户数据目录 `civitai_manager` 保持不变。
 
@@ -41,7 +42,7 @@ CivitaiManager/
 ├── js/
 │   ├── civitai_manager.js      # UI 编排与交互
 │   ├── civitai_lora_node.js    # 多 LoRA 节点控件与 LoRA 专用弹窗
-│   └── civitai/                # 常量、状态、API、样式、i18n
+│   └── civitai/                # 常量、状态、API、收藏、样式、i18n
 ├── locales/{en,zh}/            # ComfyUI 官方 locale 资源
 ├── pyproject.toml              # Comfy Registry 发布元数据
 └── tests/
@@ -66,6 +67,8 @@ MODEL → Civitai Multi LoRA Loader → MODEL
 ```
 
 下载任务写入 ComfyUI 用户目录的 `civitai_manager/downloads.json`：最多保留 100 条已结束记录，结束 24 小时后自动清理。重启时仍处于队列或下载中的任务会标记为失败，并可从界面重试。
+
+收藏以 Civitai 模型 ID 和资源类型作为稳定标识。远程模型被收藏后再下载到本地时会合并成同一条记录；旧版写在本地 companion 元数据中的收藏会在首次加载时自动迁移。
 
 Library 扫描结果默认缓存 30 秒；下载完成或本地资产发生移动、删除、收藏、元数据更新时自动失效，也可以点击 Refresh 强制重建。
 
