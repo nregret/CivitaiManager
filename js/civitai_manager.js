@@ -16,6 +16,7 @@ import {
     bindSearchCombo,
     ensureNotificationHost,
     renderFileActions,
+    renderPromoLinks,
     renderSearchCombo,
     renderSearchToolbar,
     renderToolbarSearchField,
@@ -373,7 +374,10 @@ function openOverlay() {
                     <div class="cmgr-title">${escapeHtml(t("CivitaiManager"))}</div>
                     <div class="cmgr-subtitle">${escapeHtml(t("Browse, download, and organize Checkpoints, UNet, LoRA, and Workflows from Civitai."))}</div>
                 </div>
-                <button class="cmgr-icon-btn" data-action="close" title="${escapeAttr(t("Close"))}">${escapeHtml(t("Cancel"))}</button>
+                <div class="cmgr-topbar-actions">
+                    ${renderPromoLinks()}
+                    <button class="cmgr-icon-btn" data-action="close" title="${escapeAttr(t("Close"))}">${escapeHtml(t("Cancel"))}</button>
+                </div>
             </div>
             <div class="cmgr-layout">
                 <nav class="cmgr-nav"></nav>

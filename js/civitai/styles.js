@@ -3797,6 +3797,80 @@ export function injectStyles() {
             }
         }
 
+        /* Shared project links in both popup title bars. */
+        .cmgr-topbar > :first-child {
+            min-width: 0;
+        }
+        .cmgr-topbar-actions,
+        .cmgr-promo-links {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .cmgr-topbar-actions {
+            flex: 0 0 auto;
+            gap: 10px;
+        }
+        .cmgr-promo-links {
+            gap: 8px;
+        }
+        .cmgr-promo-link {
+            width: 34px;
+            height: 34px;
+            box-sizing: border-box;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+            border: 1px solid color-mix(in srgb, currentColor 36%, var(--cmgr-border));
+            border-radius: 12px;
+            background: color-mix(in srgb, var(--cmgr-control) 88%, transparent);
+            box-shadow: inset 0 1px 0 color-mix(in srgb, var(--cmgr-text) 6%, transparent);
+            color: color-mix(in srgb, var(--cmgr-accent) 78%, var(--cmgr-text));
+            text-decoration: none;
+            user-select: none;
+            transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+        }
+        .cmgr-promo-link:hover,
+        .cmgr-promo-link:focus-visible {
+            border-color: color-mix(in srgb, currentColor 58%, var(--cmgr-border));
+            background: color-mix(in srgb, currentColor 14%, var(--cmgr-control));
+            color: var(--cmgr-text);
+            transform: translateY(-1px);
+            box-shadow: 0 8px 22px color-mix(in srgb, currentColor 16%, transparent), inset 0 1px 0 color-mix(in srgb, var(--cmgr-text) 7%, transparent);
+            outline: none;
+        }
+        .cmgr-promo-afdian {
+            width: 54px;
+            color: #f472b6;
+        }
+        .cmgr-promo-afdian span {
+            font-size: 12px;
+            font-weight: 850;
+            letter-spacing: -0.02em;
+            white-space: nowrap;
+        }
+        @media (max-width: 640px) {
+            .cmgr-topbar {
+                padding-inline: 14px;
+                gap: 10px;
+            }
+            .cmgr-topbar-actions {
+                gap: 6px;
+            }
+            .cmgr-promo-links {
+                gap: 5px;
+            }
+            .cmgr-promo-link {
+                width: 32px;
+                height: 32px;
+                border-radius: 10px;
+            }
+            .cmgr-promo-afdian {
+                width: 50px;
+            }
+        }
+
         /* Shared sidebar count badges. Keep them quiet until their row is active. */
         .cmgr-nav .cmgr-nav-btn > span {
             min-width: 0;

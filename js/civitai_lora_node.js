@@ -12,6 +12,7 @@ import {
     bindSearchCombo,
     ensureNotificationHost,
     renderFileActions,
+    renderPromoLinks,
     renderSearchCombo,
     renderSearchToolbar,
     renderToolbarSearchField,
@@ -489,7 +490,10 @@ function createOverlay() {
                     <div class="cmgr-title">${escapeHtml(t("LoRA Manager"))}</div>
                     <div class="cmgr-subtitle">${escapeHtml(t("Search, download, apply, and manage LoRAs for this node."))}</div>
                 </div>
-                <button class="cmgr-icon-btn" data-action="close-lora-manager">${escapeHtml(t("Close"))}</button>
+                <div class="cmgr-topbar-actions">
+                    ${renderPromoLinks()}
+                    <button class="cmgr-icon-btn" data-action="close-lora-manager">${escapeHtml(t("Close"))}</button>
+                </div>
             </div>
             <div class="cmgr-layout cmgr-lora-layout">
                 <nav class="cmgr-nav cmgr-lora-nav"></nav>

@@ -1,5 +1,10 @@
 import { t } from "./i18n.js";
 
+export const PROMO_LINKS = Object.freeze({
+    github: "https://github.com/nregret/CivitaiManager",
+    afdian: "https://www.ifdian.net/a/nnegret?utm_source=copylink&utm_medium=link",
+});
+
 function escapeHtml(value) {
     return String(value ?? "")
         .replaceAll("&", "&amp;")
@@ -11,6 +16,27 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
     return escapeHtml(value).replaceAll("`", "&#096;");
+}
+
+function githubIcon() {
+    return `
+        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
+            <path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.53 2.87 8.37 6.84 9.72.5.1.68-.22.68-.49v-1.88c-2.78.62-3.37-1.22-3.37-1.22-.45-1.19-1.11-1.51-1.11-1.51-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.9 1.57 2.36 1.12 2.94.86.09-.67.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05A9.3 9.3 0 0 1 12 6.98c.85 0 1.7.12 2.5.34 1.9-1.33 2.74-1.05 2.74-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.8-4.57 5.06.36.32.68.94.68 1.9v2.8c0 .27.18.59.69.49A10.13 10.13 0 0 0 22 12.26C22 6.58 17.52 2 12 2Z"/>
+        </svg>
+    `;
+}
+
+export function renderPromoLinks() {
+    return `
+        <div class="cmgr-promo-links" aria-label="${escapeAttr(t("Project Links"))}">
+            <a class="cmgr-promo-link cmgr-promo-github" href="${escapeAttr(PROMO_LINKS.github)}" target="_blank" rel="noopener noreferrer" title="${escapeAttr(t("Open GitHub"))}" aria-label="${escapeAttr(t("Open GitHub"))}">
+                ${githubIcon()}
+            </a>
+            <a class="cmgr-promo-link cmgr-promo-afdian" href="${escapeAttr(PROMO_LINKS.afdian)}" target="_blank" rel="noopener noreferrer" title="${escapeAttr(t("Support on Afdian"))}" aria-label="${escapeAttr(t("Support on Afdian"))}">
+                <span>爱发电</span>
+            </a>
+        </div>
+    `;
 }
 
 export function ensureNotificationHost(shell) {
