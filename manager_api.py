@@ -1734,6 +1734,7 @@ def _search_civitai_models(
         "items": collected[:limit],
         "metadata": metadata or {},
         "taxonomy": taxonomy,
+        "content_filter_active": not bool(config.get("allow_nsfw", False)),
     }
     if warning:
         response["warning"] = warning

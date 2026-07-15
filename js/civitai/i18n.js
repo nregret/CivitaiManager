@@ -159,6 +159,7 @@ const messages = {
         "No trained words listed.": "未列出触发词。",
         "No trained words cached.": "未缓存触发词。",
         "No Preview": "无预览",
+        "Preview hidden by content settings": "预览已被内容设置过滤",
         "Open original image": "查看原图",
         "No description available.": "暂无描述。",
         Connection: "连接",

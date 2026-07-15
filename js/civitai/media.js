@@ -22,6 +22,43 @@ function uniqueUrls(urls) {
     return [...new Set(urls.map((url) => String(url || "").trim()).filter(Boolean))];
 }
 
+function sourceUrl(source) {
+    return typeof source === "string"
+        ? source
+        : source?.url || source?.videoUrl || source?.thumbnailUrl || "";
+}
+
+function sourceIsVideo(source) {
+    const mediaType = String(source?.type || source?.mimeType || source?.contentType || "").toLowerCase();
+    return mediaType.includes("video") || looksLikeVideoUrl(sourceUrl(source));
+}
+
+export function findModelPreviewSource(model, preferredVersion = null, options = {}) {
+    const versions = Array.isArray(model?.modelVersions) ? model.modelVersions : [];
+    const preferredId = String(preferredVersion?.id || "");
+    const orderedVersions = preferredVersion
+        ? [preferredVersion, ...versions.filter((version) => (
+            version !== preferredVersion && (!preferredId || String(version?.id || "") !== preferredId)
+        ))]
+        : versions;
+    const candidates = [];
+    orderedVersions.forEach((version) => {
+        if (Array.isArray(version?.images)) candidates.push(...version.images);
+    });
+    if (Array.isArray(model?.images)) candidates.push(...model.images);
+    const available = candidates.filter((source) => Boolean(sourceUrl(source)));
+    if (options.preferImage === true) {
+        return available.find((source) => !sourceIsVideo(source)) || available[0] || null;
+    }
+    return available[0] || null;
+}
+
+export function isModelPreviewFiltered(model, contentFilterActive = false) {
+    if (!contentFilterActive) return false;
+    const level = Number(model?.nsfwLevel ?? model?.nsfw_level);
+    return model?.nsfw === true || (Number.isFinite(level) && level > 1);
+}
+
 function civitaiMediaParts(rawUrl) {
     let parsed;
     try {
@@ -42,9 +79,7 @@ function civitaiMediaParts(rawUrl) {
  * first fallback so newly uploaded media can be generated on demand.
  */
 export function createPreviewMedia(image, width = 450) {
-    const rawUrl = typeof image === "string"
-        ? image
-        : image?.url || image?.videoUrl || image?.thumbnailUrl || "";
+    const rawUrl = sourceUrl(image);
     if (!rawUrl) return { url: "", rawUrl: "", type: "image", fallbackUrls: [] };
 
     const mediaType = String(image?.type || image?.mimeType || image?.contentType || "").toLowerCase();

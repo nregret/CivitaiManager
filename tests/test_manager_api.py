@@ -264,6 +264,20 @@ class PathAndConfigTests(unittest.TestCase):
 
 
 class SearchFallbackTests(unittest.TestCase):
+    def test_search_response_reports_when_content_filter_is_active(self):
+        result = {"items": [{"id": 1, "name": "Example"}], "metadata": {}}
+        config = manager._default_config()
+        with (
+            mock.patch.object(manager, "_read_models_json", return_value=result),
+            mock.patch.object(manager, "_merge_taxonomy_cache"),
+            mock.patch.object(manager, "_taxonomy_cache_get", return_value={}),
+        ):
+            response = manager._search_civitai_models(
+                "lora", "Example", "", "Highest Rated", 40, "", "", "", config,
+            )
+
+        self.assertTrue(response["content_filter_active"])
+
     def test_fallback_filters_items_and_prefixes_next_cursor(self):
         result = {
             "items": [

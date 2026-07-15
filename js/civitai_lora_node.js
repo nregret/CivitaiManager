@@ -19,7 +19,11 @@ import {
     updateNotificationHost,
 } from "./civitai/components.js";
 import { t } from "./civitai/i18n.js";
-import { createPreviewMedia } from "./civitai/media.js";
+import {
+    createPreviewMedia,
+    findModelPreviewSource,
+    isModelPreviewFiltered,
+} from "./civitai/media.js";
 import { injectStyles } from "./civitai/styles.js";
 
 const NODE_NAME = "CivitaiMultiLoraLoader";
@@ -41,6 +45,7 @@ let searchSequence = 0;
 let toastTimer = null;
 let renderedPopupTab = "";
 let previewObserver = null;
+let popupPreviewSetupFrame = 0;
 
 const popup = {
     node: null,
@@ -55,6 +60,7 @@ const popup = {
     expandedLocalFolders: {},
     taxonomy: { baseModels: [], tags: [] },
     remoteItems: [],
+    contentFilterActive: false,
     nextCursor: "",
     remoteLoading: false,
     remoteResetting: false,
@@ -860,6 +866,16 @@ function setupPopupLazyPreviews() {
     }
 }
 
+function schedulePopupLazyPreviews() {
+    if (popupPreviewSetupFrame) cancelAnimationFrame(popupPreviewSetupFrame);
+    popupPreviewSetupFrame = requestAnimationFrame(() => {
+        popupPreviewSetupFrame = requestAnimationFrame(() => {
+            popupPreviewSetupFrame = 0;
+            if (popupBody?.isConnected && overlay?.classList.contains("show")) setupPopupLazyPreviews();
+        });
+    });
+}
+
 function maybeAutoLoadMoreLoras(element) {
     if (!element || popup.tab !== "discover" || popup.remoteLoading || !popup.nextCursor) return;
     const remaining = element.scrollHeight - element.scrollTop - element.clientHeight;
@@ -920,7 +936,7 @@ function renderPopup(options = {}) {
     updatePopupMessages();
     bindPopupEvents();
     bindPopupScroll();
-    setupPopupLazyPreviews();
+    schedulePopupLazyPreviews();
     restorePopupScroll();
     restorePopupFocus(focusedField);
 }
@@ -997,7 +1013,7 @@ function updateSelectedLocalCard() {
     }
     card.replaceWith(replacement);
     bindPopupEvents();
-    setupPopupLazyPreviews();
+    schedulePopupLazyPreviews();
     return true;
 }
 
@@ -1018,7 +1034,7 @@ function appendRemoteItems(items, startIndex) {
     if (items.length) {
         results.insertAdjacentHTML("beforeend", items.map((model, index) => renderRemoteCard(model, startIndex + index)).join(""));
         bindPopupEvents();
-        setupPopupLazyPreviews();
+        schedulePopupLazyPreviews();
     }
     maybeAutoLoadMoreLoras(results);
     return true;
@@ -1108,29 +1124,22 @@ function selectedFile() {
 }
 
 function rawPreview(model, version = versionsFor(model)[0]) {
-    const images = [
-        ...(Array.isArray(version?.images) ? version.images : []),
-        ...(Array.isArray(model?.images) ? model.images : []),
-    ];
-    const image = images.find((item) => {
-        const type = String(item?.type || item?.mimeType || "").toLowerCase();
-        const url = typeof item === "string" ? item : item?.url || item?.thumbnailUrl || "";
-        return url && !type.includes("video") && !/\.(mp4|webm|mov)(?:\?|$)/i.test(url);
-    });
+    const image = findModelPreviewSource(model, version, { preferImage: true });
     return typeof image === "string" ? image : image?.url || image?.thumbnailUrl || "";
 }
 
 function remotePreviewMedia(model, version = versionsFor(model)[0], width = 450) {
-    const media = [
-        ...(Array.isArray(version?.images) ? version.images : []),
-        ...(Array.isArray(model?.images) ? model.images : []),
-    ].find((item) => typeof item === "string" ? item : item?.url || item?.videoUrl || item?.thumbnailUrl);
-    return createPreviewMedia(media, width);
+    const source = findModelPreviewSource(model, version);
+    if (source) return createPreviewMedia(source, width);
+    const messageKey = isModelPreviewFiltered(model, popup.contentFilterActive)
+        ? "Preview hidden by content settings"
+        : "No Preview";
+    return { url: "", type: "image", emptyText: t(messageKey) };
 }
 
 function renderPreview(media, label, rawUrl = "", options = {}) {
     const descriptor = typeof media === "string" ? { url: media, type: "image" } : media || {};
-    if (!descriptor.url) return `<div class="cmgr-no-preview">${escapeHtml(t("No Preview"))}</div>`;
+    if (!descriptor.url) return renderUnavailablePreview(descriptor.emptyText);
     const content = descriptor.type === "video"
         ? renderRemoteVideo(descriptor, label, options)
         : renderRemoteImage(descriptor, label, options);
@@ -1143,7 +1152,7 @@ function renderRemoteImage(media, label, options = {}) {
     const defer = options.defer === true;
     const src = defer ? TRANSPARENT_PIXEL : media.url;
     const lazyAttrs = defer ? `data-cmgr-lora-src="${escapeAttr(media.url)}" data-cmgr-loaded="0"` : "";
-    const priority = defer ? "low" : options.priority || "auto";
+    const priority = options.priority || "auto";
     const stateClass = defer ? "is-pending" : options.instant ? "is-loaded" : "is-loading";
     return `<img class="cmgr-preview-img ${options.className || ""} ${stateClass}" src="${escapeAttr(src)}" ${lazyAttrs} ${previewFallbackAttr(media.fallbackUrls || [])} alt="${escapeAttr(label || "LoRA")}" loading="${defer ? "lazy" : "eager"}" fetchpriority="${priority}" decoding="async" onload="if(!this.dataset.cmgrLoraSrc||this.dataset.cmgrLoaded==='1'){this.classList.remove('is-pending','is-loading');this.classList.add('is-loaded')}" onerror="let q=[];try{q=JSON.parse(this.dataset.fallbackSrcs||'[]')}catch(_){};const next=q.shift();this.dataset.fallbackSrcs=JSON.stringify(q);if(next){this.src=next;}else{this.replaceWith(Object.assign(document.createElement('div'),{className:'cmgr-no-preview',textContent:'No Preview'}))}" />`;
 }
@@ -1167,7 +1176,7 @@ function previewFallbackAttr(urls) {
 
 function renderDetailPreviewMedia(media, label, rawUrl = "") {
     const descriptor = typeof media === "string" ? { url: media, type: "image" } : media || {};
-    if (!descriptor.url) return `<div class="cmgr-no-preview">${escapeHtml(t("No Preview"))}</div>`;
+    if (!descriptor.url) return renderUnavailablePreview(descriptor.emptyText);
     const backgroundUrl = descriptor.type === "video" && descriptor.posterUrl ? descriptor.posterUrl : descriptor.url;
     return `
         <img class="cmgr-detail-preview-bg" src="${escapeAttr(backgroundUrl)}" alt="" aria-hidden="true" decoding="async" />
@@ -1177,14 +1186,26 @@ function renderDetailPreviewMedia(media, label, rawUrl = "") {
     `;
 }
 
+function renderUnavailablePreview(text) {
+    const label = String(text || t("No Preview"));
+    const filteredClass = label === t("Preview hidden by content settings") ? " cmgr-filtered-preview" : "";
+    return `<div class="cmgr-no-preview${filteredClass}">${escapeHtml(label)}</div>`;
+}
+
 function renderRemoteCard(model, index = 0) {
     const version = versionsFor(model)[0] || {};
     const media = remotePreviewMedia(model, version);
     const selected = String(popup.selectedRemote?.id || "") === String(model.id || "");
     const installed = findLocalForRemote(model, version);
+    const preview = media.url
+        ? `<span class="cmgr-media-skeleton" aria-hidden="true"></span>${renderPreview(media, model.name, "", {
+            defer: true,
+            priority: index < HIGH_PRIORITY_PREVIEW_LOADS ? "high" : "auto",
+        })}`
+        : renderUnavailablePreview(media.emptyText);
     return `
         <article class="cmgr-card cmgr-lora-card ${selected ? "selected" : ""}" data-remote-id="${escapeAttr(model.id)}">
-            <div class="cmgr-thumb">${renderPreview(media, model.name, "", { defer: index >= INITIAL_PREVIEW_LOADS, priority: index < HIGH_PRIORITY_PREVIEW_LOADS ? "high" : "auto" })}</div>
+            <div class="cmgr-thumb">${preview}</div>
             ${version.baseModel ? `<div class="cmgr-card-badge">${escapeHtml(version.baseModel)}</div>` : ""}
             <div class="cmgr-card-body">
                 <div class="cmgr-card-title">${escapeHtml(model.name || "Untitled")}</div>
@@ -1339,6 +1360,7 @@ function applyRemoteSearch(data, reset) {
     const items = Array.isArray(data?.items) ? data.items : [];
     const startIndex = reset ? 0 : popup.remoteItems.length;
     popup.remoteItems = reset ? items : [...popup.remoteItems, ...items];
+    popup.contentFilterActive = data?.content_filter_active === true;
     if (reset) popup.selectedRemote = null;
     popup.nextCursor = data?.metadata?.nextCursor || "";
     return { items, startIndex };
@@ -1495,7 +1517,7 @@ function updateLocalFolderView(options = {}) {
         delete detail.dataset.localAssetId;
     }
     bindPopupEvents();
-    setupPopupLazyPreviews();
+    schedulePopupLazyPreviews();
     return true;
 }
 
@@ -2018,7 +2040,7 @@ function bindPopupEvents() {
                 if (!updateLocalDetail()) renderPopup();
             };
         });
-        setupPopupLazyPreviews();
+        schedulePopupLazyPreviews();
     };
     const localQuery = popupBody?.querySelector('[data-field="local-query"]');
     const clearLocalQuery = popupBody?.querySelector('[data-action="clear-lora-local-search"]');

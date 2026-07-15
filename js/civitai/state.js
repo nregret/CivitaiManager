@@ -15,6 +15,7 @@ export const state = {
     loadingSearch: false,
     autoLoadingMore: false,
     searchItems: [],
+    contentFilterActive: false,
     selectedModel: null,
     selectedVersionId: "",
     selectedFileName: "",

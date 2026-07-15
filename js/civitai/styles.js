@@ -2119,8 +2119,46 @@ export function injectStyles() {
             0% { transform: translateX(-115%); }
             65%, 100% { transform: translateX(115%); }
         }
+        .cmgr-media-skeleton {
+            position: absolute;
+            inset: 0;
+            z-index: 1;
+            overflow: hidden;
+            background: color-mix(in srgb, var(--cmgr-panel-soft) 86%, var(--cmgr-text) 14%);
+            opacity: 1;
+            pointer-events: none;
+            transition: opacity 0.18s ease;
+        }
+        .cmgr-media-skeleton::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(
+                105deg,
+                transparent 22%,
+                color-mix(in srgb, var(--cmgr-text) 15%, transparent) 44%,
+                transparent 66%
+            );
+            transform: translateX(-115%);
+            animation: cmgrSkeletonShimmer 1.35s ease-in-out infinite;
+        }
+        .cmgr-thumb:has(.cmgr-preview-img.is-loaded) .cmgr-media-skeleton,
+        .cmgr-thumb:has(.cmgr-no-image) .cmgr-media-skeleton,
+        .cmgr-thumb:has(.cmgr-no-preview) .cmgr-media-skeleton {
+            opacity: 0;
+        }
+        .cmgr-filtered-preview {
+            box-sizing: border-box;
+            padding: 24px;
+            color: color-mix(in srgb, var(--cmgr-muted) 88%, var(--cmgr-text) 12%);
+            font-size: 13px;
+            font-weight: 720;
+            line-height: 1.55;
+            text-align: center;
+        }
         @media (prefers-reduced-motion: reduce) {
-            .cmgr-skeleton-card::after {
+            .cmgr-skeleton-card::after,
+            .cmgr-media-skeleton::after {
                 animation: none;
                 transform: none;
                 opacity: 0.45;
