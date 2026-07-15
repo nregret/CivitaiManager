@@ -48,6 +48,7 @@ const NODE_SIDE_MARGIN = 14;
 const NODE_SWITCH_WIDTH = 34;
 const NODE_SWITCH_HEIGHT = 18;
 const NODE_REMOVE_SIZE = 22;
+const NODE_COPY_ICON_SIZE = 14;
 
 let overlay = null;
 let popupBody = null;
@@ -144,6 +145,19 @@ app.registerExtension({
             if (width && Math.abs(width - Number(this._cmgrLastLoraWidth || 0)) >= 8) updateNodeLoraLabels(this);
             return result;
         };
+
+        const originalMouseMove = nodeType.prototype.onMouseMove;
+        nodeType.prototype.onMouseMove = function (event, pos, graphCanvas) {
+            const result = originalMouseMove?.apply(this, arguments);
+            updateNodeLoraControlHover(this, pos, graphCanvas);
+            return result;
+        };
+
+        const originalMouseLeave = nodeType.prototype.onMouseLeave;
+        nodeType.prototype.onMouseLeave = function () {
+            clearNodeLoraControlHover(this);
+            return originalMouseLeave?.apply(this, arguments);
+        };
     },
 });
 
@@ -238,7 +252,12 @@ function writeNodeData(node, loras = node?._cmgrLoras || []) {
     node._cmgrLoras = normalizeLoraList(loras);
     const widget = node.widgets?.find((item) => item.name === "lora_list_json");
     if (widget) widget.value = JSON.stringify(node._cmgrLoras);
-    node.setDirtyCanvas?.(true, true);
+    redrawNode(node);
+}
+
+function redrawNode(node) {
+    node?.setDirtyCanvas?.(true, true);
+    app?.canvas?.setDirty?.(true, true);
 }
 
 function shortLoraName(entry, maxLength = 30) {
@@ -253,7 +272,7 @@ function loraBaseName(entry) {
 
 function adaptiveLoraName(entry, nodeWidth) {
     const name = loraBaseName(entry);
-    const maxChars = Math.max(12, Math.floor((Math.max(180, Number(nodeWidth || 300)) - 112) / 7));
+    const maxChars = Math.max(12, Math.floor((Math.max(180, Number(nodeWidth || 300)) - 136) / 7));
     if (name.length <= maxChars) return name;
     const head = Math.ceil((maxChars - 3) * 0.68);
     const tail = Math.max(0, maxChars - 3 - head);
@@ -278,12 +297,161 @@ function roundedNodeRect(ctx, x, y, width, height, radius) {
     ctx.quadraticCurveTo(x, y, x + safeRadius, y);
 }
 
+function normalizedTriggerWords(entry) {
+    const seen = new Set();
+    return (Array.isArray(entry?.trained_words) ? entry.trained_words : []).reduce((words, value) => {
+        const word = String(value || "").trim();
+        const key = word.toLocaleLowerCase();
+        if (!word || seen.has(key)) return words;
+        seen.add(key);
+        words.push(word);
+        return words;
+    }, []);
+}
+
+function showNodeToast(message, severity = "info") {
+    const toast = app?.extensionManager?.toast;
+    if (typeof toast?.add === "function") {
+        toast.add({
+            severity,
+            summary: t("LoRA Trigger Words"),
+            detail: message,
+            life: severity === "warn" ? 5200 : 3200,
+        });
+        return;
+    }
+    showToast(message);
+}
+
+function writeLegacyClipboardText(value) {
+    const activeElement = document.activeElement;
+    const input = document.createElement("textarea");
+    input.value = value;
+    input.setAttribute("readonly", "");
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    document.body.append(input);
+    input.focus({ preventScroll: true });
+    input.select();
+    let copied = false;
+    try {
+        copied = document.execCommand?.("copy") === true;
+    } finally {
+        input.remove();
+        activeElement?.focus?.({ preventScroll: true });
+    }
+    return copied;
+}
+
+async function writeClipboardText(value) {
+    // This runs directly inside the canvas pointer event, so the legacy path
+    // retains user activation even in embedded browsers whose async clipboard
+    // promise can remain pending indefinitely.
+    if (writeLegacyClipboardText(value)) return;
+    if (typeof navigator?.clipboard?.writeText === "function") {
+        await navigator.clipboard.writeText(value);
+        return;
+    }
+    throw new Error("Clipboard unavailable");
+}
+
+async function copyNodeLoraTriggerWords(entry) {
+    const words = normalizedTriggerWords(entry);
+    if (!words.length) {
+        showNodeToast(
+            t("This LoRA has no cached trigger words. The author may have written them in the model description."),
+            "warn",
+        );
+        return;
+    }
+    try {
+        await writeClipboardText(words.join(", "));
+        showNodeToast(t("Copied {count} trigger words.", { count: words.length }), "success");
+    } catch (_) {
+        showNodeToast(t("Could not copy the trigger words."), "error");
+    }
+}
+
+function nodeLoraControlGeometry(widget, node) {
+    const width = Number(widget?.__cmgrDrawWidth || node?.size?.[0] || 300);
+    const rowY = Number(widget?.__cmgrRowY ?? widget?.last_y ?? 0);
+    const rowHeight = Number(widget?.__cmgrRowHeight || NODE_CONTROL_HEIGHT);
+    const switchRight = NODE_SIDE_MARGIN + 7 + NODE_SWITCH_WIDTH + 5;
+    const removeLeft = width - NODE_SIDE_MARGIN - NODE_REMOVE_SIZE - 6;
+    return {
+        width,
+        rowY,
+        rowHeight,
+        switchRight,
+        removeLeft,
+        contentLeft: switchRight,
+        contentRight: removeLeft - 4,
+    };
+}
+
+function nodeLoraControlHitRegion(widget, pos, node) {
+    const x = Number(pos?.[0]);
+    const y = Number(pos?.[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return "";
+    const geometry = nodeLoraControlGeometry(widget, node);
+    if (
+        y < geometry.rowY
+        || y > geometry.rowY + geometry.rowHeight
+        || x < NODE_SIDE_MARGIN
+        || x > geometry.width - NODE_SIDE_MARGIN
+    ) return "";
+    if (x <= geometry.switchRight) return "toggle";
+    if (x >= geometry.removeLeft - 4) return "remove";
+    if (x >= geometry.contentLeft && x < geometry.contentRight) return "copy";
+    return "";
+}
+
+function nodeCanvasElement(graphCanvas) {
+    return graphCanvas?.canvas || app?.canvas?.canvas || null;
+}
+
+function updateNodeLoraControlHover(node, pos, graphCanvas) {
+    let activeRegion = "";
+    let changed = false;
+    (node?.widgets || []).forEach((widget) => {
+        if (!widget?.__cmgrLoraControl) return;
+        const nextRegion = activeRegion ? "" : nodeLoraControlHitRegion(widget, pos, node);
+        if (nextRegion) activeRegion = nextRegion;
+        if (widget.__cmgrHoverRegion !== nextRegion) {
+            widget.__cmgrHoverRegion = nextRegion;
+            changed = true;
+        }
+    });
+
+    const canvas = nodeCanvasElement(graphCanvas);
+    if (canvas?.style && activeRegion) {
+        canvas.style.cursor = "pointer";
+        node._cmgrOwnsCanvasCursor = true;
+    } else if (canvas?.style && node?._cmgrOwnsCanvasCursor) {
+        canvas.style.cursor = "";
+        node._cmgrOwnsCanvasCursor = false;
+    }
+    if (changed) redrawNode(node);
+}
+
+function clearNodeLoraControlHover(node) {
+    let changed = false;
+    (node?.widgets || []).forEach((widget) => {
+        if (!widget?.__cmgrLoraControl || !widget.__cmgrHoverRegion) return;
+        widget.__cmgrHoverRegion = "";
+        changed = true;
+    });
+    const canvas = nodeCanvasElement();
+    if (canvas?.style && node?._cmgrOwnsCanvasCursor) canvas.style.cursor = "";
+    if (node) node._cmgrOwnsCanvasCursor = false;
+    if (changed) redrawNode(node);
+}
+
 function createNodeLoraControl({ entry, nodeWidth, onToggle, onRemove }) {
-    let enabled = entry.enabled !== false;
     const widget = {
         type: "custom",
         name: `cmgr_lora_control:${entry.name}`,
-        value: enabled,
+        value: entry.enabled !== false,
         options: {},
         serialize: false,
         computedHeight: NODE_CONTROL_HEIGHT,
@@ -291,7 +459,8 @@ function createNodeLoraControl({ entry, nodeWidth, onToggle, onRemove }) {
         __cmgrLoraControl: true,
         __cmgrLoraEntry: entry,
         __cmgrDisplayName: adaptiveLoraName(entry, nodeWidth),
-        tooltip: entry.name,
+        __cmgrHoverRegion: "",
+        tooltip: `${entry.name}\n${t("Click the LoRA name to copy its trigger words.")}`,
         computeSize(width) {
             return [width || 300, NODE_CONTROL_HEIGHT];
         },
@@ -299,12 +468,22 @@ function createNodeLoraControl({ entry, nodeWidth, onToggle, onRemove }) {
             const rowHeight = Math.min(NODE_CONTROL_HEIGHT, Math.max(24, height || NODE_CONTROL_HEIGHT));
             const rowY = y + Math.max(0, ((height || NODE_CONTROL_HEIGHT) - rowHeight) / 2);
             const rowWidth = Math.max(120, width - NODE_SIDE_MARGIN * 2);
+            const enabled = widget.value !== false;
+            const vueWidgetCanvas = ctx?.canvas?.closest?.(".lg-node-widget") ? ctx.canvas : null;
+            if (vueWidgetCanvas?.style) {
+                vueWidgetCanvas.style.cursor = "pointer";
+                vueWidgetCanvas.title = t("Click the switch, LoRA name, or remove button.");
+            }
             widget.last_y = y;
             widget.__cmgrDrawWidth = width;
+            widget.__cmgrRowY = rowY;
+            widget.__cmgrRowHeight = rowHeight;
 
             ctx.save();
             roundedNodeRect(ctx, NODE_SIDE_MARGIN, rowY, rowWidth, rowHeight, 8);
-            ctx.fillStyle = enabled ? "rgba(55, 145, 255, 0.12)" : "rgba(255, 255, 255, 0.035)";
+            ctx.fillStyle = widget.__cmgrHoverRegion === "copy"
+                ? (enabled ? "rgba(55, 145, 255, 0.19)" : "rgba(255, 255, 255, 0.065)")
+                : (enabled ? "rgba(55, 145, 255, 0.12)" : "rgba(255, 255, 255, 0.035)");
             ctx.fill();
             ctx.strokeStyle = enabled ? "rgba(89, 166, 255, 0.42)" : "rgba(255, 255, 255, 0.11)";
             ctx.lineWidth = 1;
@@ -313,7 +492,9 @@ function createNodeLoraControl({ entry, nodeWidth, onToggle, onRemove }) {
             const switchX = NODE_SIDE_MARGIN + 7;
             const switchY = rowY + (rowHeight - NODE_SWITCH_HEIGHT) / 2;
             roundedNodeRect(ctx, switchX, switchY, NODE_SWITCH_WIDTH, NODE_SWITCH_HEIGHT, NODE_SWITCH_HEIGHT / 2);
-            ctx.fillStyle = enabled ? "#3b93f6" : "#4b5563";
+            ctx.fillStyle = enabled
+                ? (widget.__cmgrHoverRegion === "toggle" ? "#62abff" : "#3b93f6")
+                : (widget.__cmgrHoverRegion === "toggle" ? "#657184" : "#4b5563");
             ctx.fill();
             ctx.beginPath();
             ctx.arc(enabled ? switchX + NODE_SWITCH_WIDTH - 9 : switchX + 9, switchY + NODE_SWITCH_HEIGHT / 2, 6.5, 0, Math.PI * 2);
@@ -323,7 +504,7 @@ function createNodeLoraControl({ entry, nodeWidth, onToggle, onRemove }) {
             const removeX = width - NODE_SIDE_MARGIN - NODE_REMOVE_SIZE - 6;
             const removeY = rowY + (rowHeight - NODE_REMOVE_SIZE) / 2;
             roundedNodeRect(ctx, removeX, removeY, NODE_REMOVE_SIZE, NODE_REMOVE_SIZE, 6);
-            ctx.fillStyle = "rgba(239, 68, 68, 0.10)";
+            ctx.fillStyle = widget.__cmgrHoverRegion === "remove" ? "rgba(239, 68, 68, 0.22)" : "rgba(239, 68, 68, 0.10)";
             ctx.fill();
             ctx.strokeStyle = "rgba(239, 68, 68, 0.30)";
             ctx.stroke();
@@ -333,8 +514,20 @@ function createNodeLoraControl({ entry, nodeWidth, onToggle, onRemove }) {
             ctx.textBaseline = "middle";
             ctx.fillText("×", removeX + NODE_REMOVE_SIZE / 2, removeY + NODE_REMOVE_SIZE / 2 + 0.5);
 
+            const copyX = removeX - NODE_COPY_ICON_SIZE - 9;
+            const copyY = rowY + (rowHeight - NODE_COPY_ICON_SIZE) / 2;
+            const hasTriggerWords = normalizedTriggerWords(widget.__cmgrLoraEntry).length > 0;
+            ctx.strokeStyle = widget.__cmgrHoverRegion === "copy"
+                ? "#8cc5ff"
+                : (hasTriggerWords ? "rgba(190, 220, 255, 0.72)" : "rgba(180, 190, 204, 0.42)");
+            ctx.lineWidth = 1.25;
+            roundedNodeRect(ctx, copyX + 4, copyY, 8, 9, 2);
+            ctx.stroke();
+            roundedNodeRect(ctx, copyX + 1, copyY + 3, 8, 9, 2);
+            ctx.stroke();
+
             const textX = switchX + NODE_SWITCH_WIDTH + 10;
-            const textRight = removeX - 9;
+            const textRight = copyX - 7;
             ctx.beginPath();
             ctx.rect(textX, rowY, Math.max(0, textRight - textX), rowHeight);
             ctx.clip();
@@ -346,21 +539,22 @@ function createNodeLoraControl({ entry, nodeWidth, onToggle, onRemove }) {
         },
         mouse(event, pointerOffset, node) {
             if (event?.type && !["pointerdown", "mousedown"].includes(event.type)) return false;
-            const width = widget.__cmgrDrawWidth || node?.size?.[0] || 300;
-            const x = Number(pointerOffset?.[0] || 0);
-            const y = Number(pointerOffset?.[1] || 0);
-            const rowY = Number(widget.last_y || 0);
-            if (y < rowY || y > rowY + NODE_CONTROL_HEIGHT) return false;
-            const switchRight = NODE_SIDE_MARGIN + 7 + NODE_SWITCH_WIDTH;
-            const removeLeft = width - NODE_SIDE_MARGIN - NODE_REMOVE_SIZE - 6;
-            if (x >= NODE_SIDE_MARGIN && x <= switchRight + 5) {
-                enabled = !enabled;
+            const region = nodeLoraControlHitRegion(widget, pointerOffset, node);
+            if (region === "toggle") {
+                const enabled = widget.value === false;
                 widget.value = enabled;
+                widget.__cmgrLoraEntry.enabled = enabled;
+                if (widget.__cmgrStrengthWidget) widget.__cmgrStrengthWidget.disabled = !enabled;
                 onToggle?.(enabled);
-                node?.setDirtyCanvas?.(true, true);
+                redrawNode(node);
                 return true;
             }
-            if (x >= removeLeft - 4 && x <= removeLeft + NODE_REMOVE_SIZE + 4) {
+            if (region === "copy") {
+                void copyNodeLoraTriggerWords(widget.__cmgrLoraEntry);
+                redrawNode(node);
+                return true;
+            }
+            if (region === "remove") {
                 onRemove?.();
                 return true;
             }
@@ -382,7 +576,7 @@ function updateNodeLoraLabels(node) {
         }
     });
     node._cmgrLastLoraWidth = width;
-    if (changed) node.setDirtyCanvas?.(true, true);
+    if (changed) redrawNode(node);
 }
 
 function removeDynamicNodeWidgets(node) {
@@ -409,11 +603,11 @@ function syncNodeWidgets(node, value) {
             entry,
             nodeWidth: width,
             onToggle: (enabled) => {
-            const current = node._cmgrLoras[index];
-            if (!current) return;
-            current.enabled = Boolean(enabled);
+                const current = node._cmgrLoras[index];
+                if (!current) return;
+                current.enabled = Boolean(enabled);
                 if (strength) strength.disabled = !current.enabled;
-            writeNodeData(node);
+                writeNodeData(node);
             },
             onRemove: () => {
                 const next = node._cmgrLoras.filter((_, itemIndex) => itemIndex !== index);
