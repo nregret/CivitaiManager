@@ -12,6 +12,7 @@ import {
     bindFavoriteFolderSidebar,
     bindSearchCombo,
     ensureNotificationHost,
+    renderFavoriteCardMark,
     renderFavoriteControls,
     renderFavoriteFolderSidebar,
     renderFileActions,
@@ -19,10 +20,10 @@ import {
     renderSearchCombo,
     renderSearchToolbar,
     renderToolbarSearchField,
+    syncFavoriteCardMark,
     updateNotificationHost,
 } from "./civitai/components.js";
 import {
-    FAVORITES_UNFILED,
     favoriteEntryForLocal,
     favoriteEntryForRemote,
     favoriteItemForLocal,
@@ -557,7 +558,7 @@ function applyFavoriteStore(data = {}) {
     if (popup.selectedFavoriteKey && !popup.favoriteItems.some((item) => item.key === popup.selectedFavoriteKey)) {
         popup.selectedFavoriteKey = "";
     }
-    if (popup.selectedFavoriteFolderId && popup.selectedFavoriteFolderId !== FAVORITES_UNFILED
+    if (popup.selectedFavoriteFolderId
         && !popup.favoriteFolders.some((folder) => folder.id === popup.selectedFavoriteFolderId)) {
         popup.selectedFavoriteFolderId = "";
     }
@@ -571,7 +572,15 @@ async function loadFavorites(shouldRender = true) {
         popup.error = error.message;
     }
     popup.favoritesLoading = false;
-    if (shouldRender && overlay?.classList.contains("show")) renderPopup();
+    if (!overlay?.classList.contains("show")) return;
+    if (shouldRender) {
+        renderPopup();
+        return;
+    }
+    rerenderNavPreservingScroll();
+    syncVisibleFavoriteCardMarks();
+    if (popup.tab === "discover" && popup.selectedRemote) updateRemoteDetail();
+    if (popup.tab === "local" && popup.selectedAssetId) updateLocalDetail();
 }
 
 function selectedFavorite() {
@@ -586,6 +595,22 @@ function localFavorite(asset) {
     return favoriteEntryForLocal(popup.favoriteItems, asset, "lora");
 }
 
+function syncVisibleFavoriteCardMarks() {
+    if (!popupBody) return;
+    if (popup.tab === "discover") {
+        popupBody.querySelectorAll("[data-remote-id]").forEach((card) => {
+            const model = popup.remoteItems.find((item) => String(item.id || "") === String(card.dataset.remoteId || ""));
+            syncFavoriteCardMark(card, Boolean(model && remoteFavorite(model)));
+        });
+    }
+    if (popup.tab === "local") {
+        popupBody.querySelectorAll("[data-local-id]").forEach((card) => {
+            const asset = popup.libraryItems.find((item) => String(item.id || "") === String(card.dataset.localId || ""));
+            syncFavoriteCardMark(card, Boolean(asset && localFavorite(asset)));
+        });
+    }
+}
+
 async function setFavoriteItem(item, favorite, folderId) {
     const payload = { item, favorite };
     if (folderId !== undefined) payload.folder_id = folderId;
@@ -595,8 +620,14 @@ async function setFavoriteItem(item, favorite, folderId) {
 }
 
 function refreshFavoriteSurface() {
-    if (popup.tab === "discover" && updateRemoteDetail()) return;
-    if (popup.tab === "local" && updateLocalDetail()) return;
+    rerenderNavPreservingScroll();
+    syncVisibleFavoriteCardMarks();
+    if (popup.tab === "discover") {
+        if (updateRemoteDetail()) return;
+    }
+    if (popup.tab === "local") {
+        if (updateLocalDetail()) return;
+    }
     renderPopup();
 }
 
@@ -631,7 +662,7 @@ async function assignFavoriteFolder(item, folderId) {
     try {
         await setFavoriteItem(item, true, folderId || "");
         showToast(t("Favorite moved"));
-        renderPopup();
+        refreshFavoriteSurface();
     } catch (error) {
         popup.error = error.message;
         renderPopup();
@@ -657,7 +688,7 @@ async function saveFavoriteFolder(editor) {
 }
 
 async function deleteFavoriteFolder(folderId) {
-    if (!folderId || !confirm(t("Delete this favorite folder? Favorites inside it will become uncategorized."))) return;
+    if (!folderId || !confirm(t("Delete this favorite folder? Its items will remain in All Favorites without a folder."))) return;
     try {
         applyFavoriteStore(await apiPost("/favorites/folder", { action: "delete", folder_id: folderId }));
         popup.favoriteFolderEditor = null;
@@ -824,7 +855,6 @@ function renderLoraFavoriteSidebar() {
         folders: popup.favoriteFolders,
         items: loraFavoriteItems(),
         selectedId: popup.selectedFavoriteFolderId,
-        unfiledId: FAVORITES_UNFILED,
         editor: popup.favoriteFolderEditor,
     });
 }
@@ -1142,8 +1172,19 @@ function updateRemoteDetail() {
     if (popup.tab !== "discover") return false;
     const detail = popupBody?.querySelector(".cmgr-lora-detail");
     if (!detail) return false;
+    const modelId = String(popup.selectedRemote?.id || "");
+    const previousPreview = modelId && detail.dataset.remoteModelId === modelId
+        ? detail.querySelector(".cmgr-lora-detail-preview")
+        : null;
+    previousPreview?.remove();
     updateSelectedCard("[data-remote-id]", popup.selectedRemote?.id);
     detail.innerHTML = renderRemoteDetail();
+    const nextPreview = detail.querySelector(".cmgr-lora-detail-preview");
+    if (previousPreview && nextPreview && previousPreview.dataset.previewKey === nextPreview.dataset.previewKey) {
+        nextPreview.replaceWith(previousPreview);
+    }
+    if (modelId) detail.dataset.remoteModelId = modelId;
+    else delete detail.dataset.remoteModelId;
     bindPopupEvents();
     return true;
 }
@@ -1386,11 +1427,12 @@ function renderRemoteCard(model, index = 0) {
         : renderUnavailablePreview(media.emptyText);
     return `
         <article class="cmgr-card cmgr-lora-card ${selected ? "selected" : ""}" data-remote-id="${escapeAttr(model.id)}">
+            ${renderFavoriteCardMark(Boolean(favorite))}
             <div class="cmgr-thumb">${preview}</div>
             ${version.baseModel ? `<div class="cmgr-card-badge">${escapeHtml(version.baseModel)}</div>` : ""}
             <div class="cmgr-card-body">
                 <div class="cmgr-card-title">${escapeHtml(model.name || "Untitled")}</div>
-                <div class="cmgr-card-tags">${favorite ? `<span class="favorite">${escapeHtml(t("Favorite"))}</span>` : ""}${installed ? `<span class="installed">${escapeHtml(t("Installed"))}</span>` : ""}</div>
+                <div class="cmgr-card-tags">${installed ? `<span class="installed">${escapeHtml(t("Installed"))}</span>` : ""}</div>
             </div>
         </article>
     `;
@@ -1858,12 +1900,12 @@ function renderLocalCard(asset, index = 0) {
     const favorite = localFavorite(asset);
     return `
         <article class="cmgr-card cmgr-lora-card asset ${popup.selectedAssetId === asset.id ? "selected" : ""}" data-local-id="${escapeAttr(asset.id)}" data-preview-key="${escapeAttr(asset.thumb_url || "")}">
+            ${renderFavoriteCardMark(Boolean(favorite))}
             <div class="cmgr-thumb">${renderPreview(asset.thumb_url, asset.name, "", { defer: index >= INITIAL_PREVIEW_LOADS, priority: index < HIGH_PRIORITY_PREVIEW_LOADS ? "high" : "auto" })}</div>
             ${asset.base_model ? `<div class="cmgr-card-badge">${escapeHtml(asset.base_model)}</div>` : ""}
             <div class="cmgr-card-body">
                 <div class="cmgr-card-title">${escapeHtml(asset.name || asset.filename)}</div>
                 <div class="cmgr-card-tags">
-                    ${favorite ? `<span class="favorite">${escapeHtml(t("Favorite"))}</span>` : ""}
                     ${isAppliedAsset(asset) ? `<span class="installed">${escapeHtml(t("Applied"))}</span>` : ""}
                 </div>
             </div>

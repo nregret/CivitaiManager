@@ -286,29 +286,48 @@ export function renderFavoriteControls(options = {}) {
     const toggleAction = String(options.toggleAction || "toggle-favorite");
     const folderAction = String(options.folderAction || "assign-favorite-folder");
     return `
-        <section class="cmgr-favorite-controls" aria-label="${escapeAttr(t("Favorite"))}">
-            <button class="cmgr-favorite-toggle ${favorite ? "is-active" : ""}" data-action="${escapeAttr(toggleAction)}" type="button">
-                <span aria-hidden="true">${favorite ? "★" : "☆"}</span>
-                <b>${escapeHtml(t(favorite ? "Unfavorite" : "Favorite"))}</b>
+        <section class="cmgr-favorite-controls ${favorite ? "is-active" : ""}" aria-label="${escapeAttr(t("Favorite"))}">
+            <button class="cmgr-favorite-toggle ${favorite ? "is-active" : ""}" data-action="${escapeAttr(toggleAction)}" type="button" title="${escapeAttr(t(favorite ? "Unfavorite" : "Favorite"))}">
+                <span class="cmgr-favorite-toggle-star" aria-hidden="true">${favorite ? "★" : "☆"}</span>
+                <span class="cmgr-favorite-toggle-copy">
+                    <b>${escapeHtml(t(favorite ? "Favorited" : "Favorite"))}</b>
+                    <small>${escapeHtml(t(favorite ? "Click to remove from favorites" : "Save for later without downloading"))}</small>
+                </span>
             </button>
             ${favorite ? `
                 <label class="cmgr-favorite-folder-select">
                     <span>${escapeHtml(t("Favorite Folder"))}</span>
                     <select class="cmgr-input" data-action="${escapeAttr(folderAction)}">
-                        <option value="" ${folderId ? "" : "selected"}>${escapeHtml(t("Uncategorized"))}</option>
+                        <option value="" ${folderId ? "" : "selected"}>${escapeHtml(t("No folder"))}</option>
                         ${folders.map((folder) => `<option value="${escapeAttr(folder.id)}" ${folderId === String(folder.id) ? "selected" : ""}>${escapeHtml(folder.name)}</option>`).join("")}
                     </select>
                 </label>
-            ` : ""}
+            ` : `<span class="cmgr-favorite-hint">${escapeHtml(t("Remote models can be favorited before downloading."))}</span>`}
         </section>
     `;
+}
+
+export function renderFavoriteCardMark(favorite) {
+    return favorite
+        ? `<span class="cmgr-card-favorite-mark" title="${escapeAttr(t("Favorited"))}" aria-label="${escapeAttr(t("Favorited"))}"><span aria-hidden="true">★</span>${escapeHtml(t("Favorite"))}</span>`
+        : "";
+}
+
+export function syncFavoriteCardMark(card, favorite) {
+    if (!card) return false;
+    const current = [...card.children].find((child) => child.classList?.contains("cmgr-card-favorite-mark"));
+    if (!favorite) {
+        current?.remove();
+        return true;
+    }
+    if (!current) card.insertAdjacentHTML("afterbegin", renderFavoriteCardMark(true));
+    return true;
 }
 
 export function renderFavoriteFolderSidebar(options = {}) {
     const folders = Array.isArray(options.folders) ? options.folders : [];
     const items = Array.isArray(options.items) ? options.items : [];
     const selectedId = String(options.selectedId || "");
-    const unfiledId = String(options.unfiledId || "__cmgr_unfiled_favorites__");
     const editor = options.editor && typeof options.editor === "object" ? options.editor : null;
     const countFor = (folderId) => items.filter((item) => String(item?.folder_id || "") === folderId).length;
     return `
@@ -326,9 +345,6 @@ export function renderFavoriteFolderSidebar(options = {}) {
             ` : ""}
             <button class="cmgr-nav-btn ${selectedId ? "" : "active"}" data-favorite-folder="">
                 <span>${escapeHtml(t("All Favorites"))}</span><b>${items.length}</b>
-            </button>
-            <button class="cmgr-nav-btn ${selectedId === unfiledId ? "active" : ""}" data-favorite-folder="${escapeAttr(unfiledId)}">
-                <span>${escapeHtml(t("Uncategorized"))}</span><b>${countFor("")}</b>
             </button>
             <div class="cmgr-favorite-folder-list">
                 ${folders.map((folder) => `

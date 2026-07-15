@@ -16,6 +16,7 @@ import {
     bindFavoriteFolderSidebar,
     bindSearchCombo,
     ensureNotificationHost,
+    renderFavoriteCardMark,
     renderFavoriteControls,
     renderFavoriteFolderSidebar,
     renderFileActions,
@@ -23,10 +24,10 @@ import {
     renderSearchCombo,
     renderSearchToolbar,
     renderToolbarSearchField,
+    syncFavoriteCardMark,
     updateNotificationHost,
 } from "./civitai/components.js";
 import {
-    FAVORITES_UNFILED,
     favoriteEntryForLocal,
     favoriteEntryForRemote,
     favoriteItemForLocal,
@@ -490,7 +491,7 @@ function applyFavoriteStore(data = {}) {
     if (state.selectedFavoriteKey && !state.favoriteItems.some((item) => item.key === state.selectedFavoriteKey)) {
         state.selectedFavoriteKey = "";
     }
-    if (state.selectedFavoriteFolderId && state.selectedFavoriteFolderId !== FAVORITES_UNFILED
+    if (state.selectedFavoriteFolderId
         && !state.favoriteFolders.some((folder) => folder.id === state.selectedFavoriteFolderId)) {
         state.selectedFavoriteFolderId = "";
     }
@@ -504,7 +505,15 @@ async function loadFavorites(shouldRender = true) {
         state.error = err.message;
     }
     state.favoritesLoading = false;
-    if (shouldRender && overlay?.classList.contains("show")) render();
+    if (!overlay?.classList.contains("show")) return;
+    if (shouldRender) {
+        render();
+        return;
+    }
+    refreshNav();
+    syncVisibleFavoriteCardMarks();
+    if (state.activeTab === "Discover" && state.selectedModel) renderSelectedModelDetail();
+    if (state.activeTab === "Library" && state.selectedAssetId) renderSelectedAssetDetail();
 }
 
 function selectedFavorite() {
@@ -519,9 +528,31 @@ function localFavorite(asset = getSelectedAsset()) {
     return favoriteEntryForLocal(state.favoriteItems, asset, state.assetKind);
 }
 
+function syncVisibleFavoriteCardMarks() {
+    if (!bodyEl) return;
+    if (state.activeTab === "Discover") {
+        bodyEl.querySelectorAll("[data-model-id]").forEach((card) => {
+            const model = state.searchItems.find((item) => String(item.id || "") === String(card.dataset.modelId || ""));
+            syncFavoriteCardMark(card, Boolean(model && remoteFavorite(model, state.assetKind)));
+        });
+    }
+    if (state.activeTab === "Library") {
+        bodyEl.querySelectorAll("[data-asset-id]").forEach((card) => {
+            const asset = state.libraryItems.find((item) => String(item.id || "") === String(card.dataset.assetId || ""));
+            syncFavoriteCardMark(card, Boolean(asset && localFavorite(asset)));
+        });
+    }
+}
+
 function refreshFavoriteSurface() {
-    if (state.activeTab === "Discover" && renderSelectedModelDetail()) return;
-    if (state.activeTab === "Library" && renderSelectedAssetDetail()) return;
+    refreshNav();
+    syncVisibleFavoriteCardMarks();
+    if (state.activeTab === "Discover") {
+        if (renderSelectedModelDetail()) return;
+    }
+    if (state.activeTab === "Library") {
+        if (renderSelectedAssetDetail()) return;
+    }
     render();
 }
 
@@ -564,7 +595,7 @@ async function assignFavoriteFolder(item, folderId) {
     try {
         await setFavoriteItem(item, true, folderId || "");
         showToast(t("Favorite moved"));
-        render();
+        refreshFavoriteSurface();
     } catch (err) {
         state.error = err.message;
         render();
@@ -591,7 +622,7 @@ async function saveFavoriteFolder(editor) {
 }
 
 async function deleteFavoriteFolder(folderId) {
-    if (!folderId || !confirm(t("Delete this favorite folder? Favorites inside it will become uncategorized."))) return;
+    if (!folderId || !confirm(t("Delete this favorite folder? Its items will remain in All Favorites without a folder."))) return;
     try {
         applyFavoriteStore(await apiPost("/favorites/folder", { action: "delete", folder_id: folderId }));
         state.favoriteFolderEditor = null;
@@ -972,6 +1003,7 @@ function renderSelectedAssetDetail() {
     const html = `<aside class="cmgr-detail is-open">${selected ? renderAssetDetail(selected) : renderEmptyAssetDetail()}</aside>`;
     const next = htmlToElement(html);
     if (existing) {
+        preserveDetailPreview(existing, next);
         existing.replaceWith(next);
     } else {
         split.appendChild(next);
@@ -1996,6 +2028,7 @@ function renderModelCard(model, index = 0) {
     const version = getVersions(model)[0] || {};
     const badge = version.baseModel || model.baseModel || model.base_model || "Other";
     const media = modelPreviewMedia(model);
+    const favorite = remoteFavorite(model, state.assetKind);
     const preview = media.url
         ? `<span class="cmgr-media-skeleton" aria-hidden="true"></span>${renderMedia(media, model.name, {
             defer: true,
@@ -2004,6 +2037,7 @@ function renderModelCard(model, index = 0) {
         : renderUnavailablePreview(media.emptyText, "cmgr-no-image");
     return `
         <article class="cmgr-card ${state.selectedModel?.id === model.id ? "selected" : ""}" data-model-id="${escapeAttr(model.id)}">
+            ${renderFavoriteCardMark(Boolean(favorite))}
             <div class="cmgr-thumb">${preview}</div>
             ${badge ? `<div class="cmgr-card-badge">${escapeHtml(badge)}</div>` : ""}
             <div class="cmgr-card-body">
@@ -2165,8 +2199,10 @@ function renderLibraryResults() {
 
 function renderAssetCard(asset, index = 0) {
     const badge = asset.base_model || inferBaseFromPath(asset) || "Other";
+    const favorite = localFavorite(asset);
     return `
         <article class="cmgr-card asset ${state.selectedAssetId === asset.id ? "selected" : ""}" data-asset-id="${escapeAttr(asset.id)}">
+            ${renderFavoriteCardMark(Boolean(favorite))}
             <div class="cmgr-thumb small">${renderImage(asset.thumb_url, asset.name, { defer: index >= INITIAL_PREVIEW_LOADS, priority: index < HIGH_PRIORITY_PREVIEW_LOADS ? "high" : "auto" })}</div>
             ${badge ? `<div class="cmgr-card-badge">${escapeHtml(badge)}</div>` : ""}
             <div class="cmgr-card-body">
@@ -2452,7 +2488,7 @@ function renderFavorites() {
     const toolbar = renderSearchToolbar({
         title: t("Favorites"),
         subtitle: state.selectedFavoriteFolderId
-            ? state.favoriteFolders.find((folder) => folder.id === state.selectedFavoriteFolderId)?.name || t("Uncategorized")
+            ? state.favoriteFolders.find((folder) => folder.id === state.selectedFavoriteFolderId)?.name || t("All Favorites")
             : t("All Favorites"),
         className: "cmgr-favorites-toolbar",
         searchHtml: renderToolbarSearchField({
@@ -2542,7 +2578,6 @@ function renderFavoritesSidebar() {
         folders: state.favoriteFolders,
         items: state.favoriteItems,
         selectedId: state.selectedFavoriteFolderId,
-        unfiledId: FAVORITES_UNFILED,
         editor: state.favoriteFolderEditor,
     });
 }

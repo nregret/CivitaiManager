@@ -4055,58 +4055,136 @@ export function injectStyles() {
             padding: 0;
         }
         .cmgr-favorite-controls {
-            display: grid;
-            grid-template-columns: minmax(112px, auto) minmax(0, 1fr);
-            align-items: end;
-            gap: 9px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
             margin: 14px 0;
-            padding: 10px;
-            border: 1px solid color-mix(in srgb, #f59e0b 20%, var(--cmgr-border));
-            border-radius: calc(var(--cmgr-radius) + 2px);
-            background: color-mix(in srgb, #f59e0b 4%, var(--cmgr-panel-soft));
+            padding: 8px;
+            border: 1px solid var(--cmgr-border);
+            border-radius: 12px;
+            background: color-mix(in srgb, var(--cmgr-control) 58%, transparent);
+            transition: border-color 0.16s ease, background-color 0.16s ease;
+        }
+        .cmgr-favorite-controls.is-active {
+            border-color: color-mix(in srgb, #f59e0b 24%, var(--cmgr-border));
+            background: color-mix(in srgb, #f59e0b 4%, var(--cmgr-control));
         }
         .cmgr-favorite-toggle {
-            min-height: 39px;
+            min-width: 138px;
+            min-height: 46px;
             display: inline-flex;
             align-items: center;
-            justify-content: center;
-            gap: 7px;
+            justify-content: flex-start;
+            gap: 9px;
+            flex: 0 0 auto;
             box-sizing: border-box;
-            padding: 0 13px;
-            border: 1px solid color-mix(in srgb, var(--cmgr-border) 90%, transparent);
-            border-radius: 10px;
-            background: var(--cmgr-control);
+            padding: 7px 11px;
+            border: 1px solid transparent;
+            border-radius: 9px;
+            background: transparent;
             color: var(--cmgr-text);
             cursor: pointer;
             font: inherit;
+            text-align: left;
+            transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.15s ease;
         }
-        .cmgr-favorite-toggle span {
-            color: #f59e0b;
-            font-size: 17px;
+        .cmgr-favorite-toggle-star {
+            width: 30px;
+            height: 30px;
+            display: grid;
+            place-items: center;
+            flex: 0 0 auto;
+            border-radius: 9px;
+            background: color-mix(in srgb, var(--cmgr-text) 6%, transparent);
+            color: color-mix(in srgb, var(--cmgr-muted) 80%, var(--cmgr-text));
+            font-size: 18px;
             line-height: 1;
         }
+        .cmgr-favorite-toggle-copy {
+            min-width: 0;
+            display: grid;
+            gap: 1px;
+        }
+        .cmgr-favorite-toggle-copy b {
+            color: var(--cmgr-text);
+            font-size: 11.5px;
+            line-height: 1.25;
+        }
+        .cmgr-favorite-toggle-copy small {
+            max-width: 150px;
+            overflow: hidden;
+            color: var(--cmgr-muted);
+            font-size: 9px;
+            font-weight: 580;
+            line-height: 1.25;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
         .cmgr-favorite-toggle.is-active {
-            border-color: color-mix(in srgb, #f59e0b 40%, var(--cmgr-border));
-            background: color-mix(in srgb, #f59e0b 10%, var(--cmgr-control));
+            border-color: color-mix(in srgb, #f59e0b 22%, transparent);
+            background: color-mix(in srgb, #f59e0b 8%, transparent);
+        }
+        .cmgr-favorite-toggle.is-active .cmgr-favorite-toggle-star {
+            background: color-mix(in srgb, #f59e0b 16%, transparent);
+            color: #f6b83f;
         }
         .cmgr-favorite-toggle:hover {
-            border-color: color-mix(in srgb, #f59e0b 54%, var(--cmgr-border));
-            background: color-mix(in srgb, #f59e0b 14%, var(--cmgr-control));
+            border-color: color-mix(in srgb, #f59e0b 28%, var(--cmgr-border));
+            background: color-mix(in srgb, #f59e0b 9%, transparent);
+            transform: translateY(-1px);
         }
         .cmgr-favorite-folder-select {
             min-width: 0;
             display: grid;
-            gap: 5px;
+            grid-template-columns: auto minmax(0, 1fr);
+            align-items: center;
+            gap: 9px;
+            flex: 1 1 auto;
+            padding-left: 10px;
+            border-left: 1px solid var(--cmgr-border);
         }
         .cmgr-favorite-folder-select > span {
             color: var(--cmgr-muted);
             font-size: 10px;
             font-weight: 760;
+            white-space: nowrap;
         }
         .cmgr-favorite-folder-select .cmgr-input {
             width: 100%;
             min-width: 0;
-            height: 39px;
+            height: 38px;
+        }
+        .cmgr-favorite-hint {
+            min-width: 0;
+            color: var(--cmgr-muted);
+            font-size: 10px;
+            font-weight: 620;
+            line-height: 1.4;
+        }
+        .cmgr-card-favorite-mark {
+            position: absolute;
+            top: 9px;
+            right: 9px;
+            z-index: 7;
+            height: 25px;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            box-sizing: border-box;
+            padding: 0 8px;
+            border: 1px solid color-mix(in srgb, #f59e0b 46%, transparent);
+            border-radius: 999px;
+            background: color-mix(in srgb, var(--cmgr-panel) 78%, transparent);
+            box-shadow: 0 5px 14px rgba(0, 0, 0, 0.26);
+            color: #f7c65d;
+            font-size: 9.5px;
+            font-weight: 800;
+            line-height: 1;
+            pointer-events: none;
+            backdrop-filter: blur(8px);
+        }
+        .cmgr-card-favorite-mark > span {
+            font-size: 12px;
         }
         .cmgr-favorite-total {
             min-width: 34px;
@@ -4124,14 +4202,19 @@ export function injectStyles() {
             font-weight: 800;
             font-variant-numeric: tabular-nums;
         }
-        .cmgr-card-tags .favorite {
-            border-color: color-mix(in srgb, #f59e0b 34%, var(--cmgr-border));
-            background: color-mix(in srgb, #f59e0b 12%, var(--cmgr-control));
-            color: color-mix(in srgb, #f59e0b 80%, var(--cmgr-text));
-        }
         @media (max-width: 480px) {
             .cmgr-favorite-controls {
-                grid-template-columns: minmax(0, 1fr);
+                align-items: stretch;
+                flex-direction: column;
+            }
+            .cmgr-favorite-toggle {
+                width: 100%;
+            }
+            .cmgr-favorite-folder-select {
+                padding-top: 8px;
+                padding-left: 0;
+                border-top: 1px solid var(--cmgr-border);
+                border-left: 0;
             }
         }
     `;

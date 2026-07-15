@@ -1,5 +1,3 @@
-export const FAVORITES_UNFILED = "__cmgr_unfiled_favorites__";
-
 export function assetKindForRoot(rootKind, fallback = "lora") {
     const root = String(rootKind || "").toLowerCase();
     if (["checkpoints", "unet"].includes(root)) return "checkpoint";
@@ -69,6 +67,7 @@ export function favoriteItemForLocal(asset, fallbackKind = "lora") {
 
 export function favoriteEntryForRemote(items, model, assetKind = "lora") {
     const modelId = String(model?.id || "");
+    if (!modelId) return null;
     const kind = assetKindForRoot("", assetKind);
     return (Array.isArray(items) ? items : []).find((item) => (
         item?.asset_kind === kind && String(item?.model_id || item?.model?.id || "") === modelId
@@ -76,6 +75,7 @@ export function favoriteEntryForRemote(items, model, assetKind = "lora") {
 }
 
 export function favoriteEntryForLocal(items, asset, fallbackKind = "lora") {
+    if (!asset || typeof asset !== "object") return null;
     const list = Array.isArray(items) ? items : [];
     const kind = assetKindForRoot(asset?.root_kind, fallbackKind);
     const modelId = String(asset?.model_id || "");
@@ -107,8 +107,7 @@ export function filterFavoriteItems(items, options = {}) {
     const query = String(options.query || "").trim().toLocaleLowerCase();
     return (Array.isArray(items) ? items : []).filter((item) => {
         if (kind && item?.asset_kind !== kind) return false;
-        if (folderId === FAVORITES_UNFILED && item?.folder_id) return false;
-        if (folderId && folderId !== FAVORITES_UNFILED && item?.folder_id !== folderId) return false;
+        if (folderId && item?.folder_id !== folderId) return false;
         if (!query) return true;
         const model = favoriteModel(item);
         return [
