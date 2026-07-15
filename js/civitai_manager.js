@@ -599,7 +599,7 @@ async function search(reset = true, options = {}) {
     const abortController = new AbortController();
     searchAbortController = abortController;
     state.loadingSearch = true;
-    if (reset && !state.searchItems.length) resetSearchResults();
+    if (reset) resetSearchResults();
     if (reset) render({ preserveScroll: false });
     else setDiscoverLoadStatus(true);
     try {

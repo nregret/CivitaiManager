@@ -1324,6 +1324,12 @@ async function searchRemote(reset = true) {
         return;
     }
 
+    if (reset) {
+        popup.remoteItems = [];
+        popup.nextCursor = "";
+        popup.selectedRemote = null;
+        popup.scroll.discover = 0;
+    }
     const controller = new AbortController();
     const sequence = ++searchSequence;
     searchController = controller;
