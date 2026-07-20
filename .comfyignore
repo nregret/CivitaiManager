@@ -1,0 +1,11 @@
+# Development-only files that should not be included in Registry archives.
+.github/
+tests/
+.agents/
+.codex/
+.test-user/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/

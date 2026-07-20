@@ -279,6 +279,32 @@ export function renderFileActions(options = {}) {
     `;
 }
 
+export function renderCollectionEmptyState(options = {}) {
+    const kind = String(options.kind || "default").replace(/[^a-z0-9_-]+/gi, "-");
+    const hints = (Array.isArray(options.hints) ? options.hints : [])
+        .map((hint) => String(hint || "").trim())
+        .filter(Boolean);
+    return `
+        <div class="cmgr-empty-state" data-empty-kind="${escapeAttr(kind)}" role="status">
+            <div class="cmgr-empty-detail-art" aria-hidden="true">
+                <span class="cmgr-empty-detail-orbit orbit-one"></span>
+                <span class="cmgr-empty-detail-orbit orbit-two"></span>
+                <span class="cmgr-empty-detail-card card-back"></span>
+                <span class="cmgr-empty-detail-card card-front"><i></i><i></i><i></i></span>
+                <span class="cmgr-empty-state-symbol"></span>
+                <span class="cmgr-empty-detail-spark spark-one"></span>
+                <span class="cmgr-empty-detail-spark spark-two"></span>
+            </div>
+            <div class="cmgr-empty-detail-copy">
+                ${options.kicker ? `<span class="cmgr-empty-detail-kicker">${escapeHtml(options.kicker)}</span>` : ""}
+                <h2>${escapeHtml(options.title || t("Nothing here yet"))}</h2>
+                ${options.description ? `<p>${escapeHtml(options.description)}</p>` : ""}
+            </div>
+            ${hints.length ? `<div class="cmgr-empty-detail-features" aria-hidden="true">${hints.map((hint) => `<span>${escapeHtml(hint)}</span>`).join("")}</div>` : ""}
+        </div>
+    `;
+}
+
 export function renderFavoriteControls(options = {}) {
     const favorite = options.favorite === true;
     const folders = Array.isArray(options.folders) ? options.folders : [];
@@ -334,7 +360,7 @@ export function renderFavoriteFolderSidebar(options = {}) {
         <div class="cmgr-nav-group cmgr-favorite-folder-group">
             <div class="cmgr-favorite-folder-head">
                 <div class="cmgr-nav-title">${escapeHtml(t("Local Favorites"))}</div>
-                <button class="cmgr-favorite-folder-add" data-favorite-folder-add type="button" title="${escapeAttr(t("New Favorite Folder"))}" aria-label="${escapeAttr(t("New Favorite Folder"))}">＋</button>
+                <button class="cmgr-favorite-folder-add" data-favorite-folder-add type="button" title="${escapeAttr(t("New Favorite Folder"))}" aria-label="${escapeAttr(t("New Favorite Folder"))}"><span aria-hidden="true"></span></button>
             </div>
             ${editor ? `
                 <div class="cmgr-favorite-folder-editor" data-favorite-folder-editor data-mode="${escapeAttr(editor.mode || "create")}" data-folder-id="${escapeAttr(editor.id || "")}">

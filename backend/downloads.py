@@ -153,6 +153,33 @@ class DownloadJobStore:
             self._cancel_events.pop(task_id, None)
             self._persist_locked()
 
+    def remove_finished_many(self, task_ids: list[str] | None = None) -> int:
+        """Remove selected terminal jobs, or every terminal job when no IDs are given."""
+        with self.lock:
+            if task_ids is not None:
+                selected_ids = {
+                    str(task_id)
+                    for task_id in task_ids
+                    if str(task_id) in self.jobs
+                    and self.jobs[str(task_id)].get("status") in TERMINAL_STATUSES
+                }
+            else:
+                selected_ids = {
+                    current_id
+                    for current_id, job in self.jobs.items()
+                    if job.get("status") in TERMINAL_STATUSES
+                }
+            for current_id in selected_ids:
+                self.jobs.pop(current_id, None)
+                self._cancel_events.pop(current_id, None)
+            if selected_ids:
+                self._persist_locked()
+            return len(selected_ids)
+
+    def remove_finished(self, task_id: str = "") -> int:
+        """Remove one or all terminal jobs without disturbing active downloads."""
+        return self.remove_finished_many([task_id] if task_id else None)
+
     def update(self, task_id: str, persist: bool = True, **changes: Any) -> dict[str, Any] | None:
         with self.lock:
             job = self.jobs.get(task_id)

@@ -16,6 +16,7 @@ import {
     bindFavoriteFolderSidebar,
     bindSearchCombo,
     ensureNotificationHost,
+    renderCollectionEmptyState,
     renderFavoriteCardMark,
     renderFavoriteControls,
     renderFavoriteFolderSidebar,
@@ -1085,6 +1086,20 @@ async function retryDownload(taskId) {
     }
 }
 
+async function removeDownloadRecord(taskId = "") {
+    if (!taskId && !confirm(t("Clear all finished download records?"))) return;
+    try {
+        const data = await apiPost("/download/remove", { task_id: taskId });
+        showToast(taskId
+            ? t("Download record removed.")
+            : t("{count} download records cleared.", { count: Number(data.removed || 0) }));
+        await loadDownloads();
+    } catch (err) {
+        state.error = err.message;
+        render();
+    }
+}
+
 async function loadDownloads(doRender = true) {
     try {
         state.downloads = await apiGet("/download-status");
@@ -1986,7 +2001,13 @@ function renderDiscover() {
 
 function renderEmptySearch() {
     if (state.loadingSearch) return renderSearchSkeletons();
-    return `<div class="cmgr-empty">${escapeHtml(t("Search {kind} from Civitai.", { kind: assetKindLabel(state.assetKind) }))}</div>`;
+    return renderCollectionEmptyState({
+        kind: "discover",
+        kicker: t("Discover"),
+        title: t("No matching {kind} found", { kind: assetKindLabel(state.assetKind) }),
+        description: t("Try another keyword or loosen the filters to explore more from Civitai."),
+        hints: [t("Change keywords"), t("Adjust filters")],
+    });
 }
 
 function renderSearchSkeletons(count = 12) {
@@ -2194,7 +2215,13 @@ function renderLibraryResults() {
     const items = filteredLibraryItems();
     return items.length
         ? items.map(renderAssetCard).join("")
-        : `<div class="cmgr-empty">${escapeHtml(t("No local assets found."))}</div>`;
+        : renderCollectionEmptyState({
+            kind: "library",
+            kicker: t("Library"),
+            title: t("No local {kind} found", { kind: assetKindLabel(state.assetKind) }),
+            description: t("Try changing the current filters or refresh the local model library."),
+            hints: [t("Change filters"), t("Refresh library")],
+        });
 }
 
 function renderAssetCard(asset, index = 0) {
@@ -2312,11 +2339,19 @@ function renderEmptySidebarDetail(title, description, kind = "model") {
 
 function renderDownloads() {
     const jobs = Object.values(state.downloads || {}).sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    const activeCount = jobs.filter((job) => ["pending", "downloading", "cancelling"].includes(job.status)).length;
+    const finishedCount = jobs.length - activeCount;
     return `
-        <section class="cmgr-page">
-            <div class="cmgr-toolbar">
-                <h2>${escapeHtml(t("Downloads"))}</h2>
-                <button class="cmgr-secondary" data-action="refresh-downloads">${escapeHtml(t("Refresh"))}</button>
+        <section class="cmgr-page cmgr-download-page">
+            <div class="cmgr-toolbar cmgr-download-toolbar">
+                <div class="cmgr-download-toolbar-heading">
+                    <h2>${escapeHtml(t("Downloads"))}</h2>
+                    <span>${escapeHtml(t("{active} active · {finished} finished", { active: activeCount, finished: finishedCount }))}</span>
+                </div>
+                <div class="cmgr-download-toolbar-actions">
+                    ${finishedCount ? `<button class="cmgr-secondary" data-action="clear-downloads">${escapeHtml(t("Clear finished"))}</button>` : ""}
+                    <button class="cmgr-secondary" data-action="refresh-downloads">${escapeHtml(t("Refresh"))}</button>
+                </div>
             </div>
             <div class="cmgr-download-list">
                 ${renderDownloadJobs(jobs)}
@@ -2336,7 +2371,13 @@ function renderDownloadListOnly() {
 }
 
 function renderDownloadJobs(jobs) {
-    return jobs.length ? jobs.map(renderDownloadJob).join("") : `<div class="cmgr-empty">${escapeHtml(t("No downloads yet."))}</div>`;
+    return jobs.length ? jobs.map(renderDownloadJob).join("") : renderCollectionEmptyState({
+        kind: "downloads",
+        kicker: t("Downloads"),
+        title: t("No download tasks yet"),
+        description: t("Downloads you queue from Discover will appear here with their progress and status."),
+        hints: [t("Live progress"), t("Retry failed tasks")],
+    });
 }
 
 function renderDownloadJob(job) {
@@ -2346,27 +2387,30 @@ function renderDownloadJob(job) {
     const active = ["pending", "downloading", "cancelling"].includes(job.status);
     const progressClass = total > 0 ? "" : " indeterminate";
     const statusKey = String(job.status || "pending").replace(/^./, (letter) => letter.toUpperCase());
+    const path = String(job.relative_path || job.target_path || "");
     return `
-        <article class="cmgr-download">
+        <article class="cmgr-download is-${escapeAttr(job.status || "pending")}">
             <div class="cmgr-download-head">
-                <div>
-                    <strong>${escapeHtml(job.filename || "Download")}</strong>
-                    <span>${escapeHtml(job.root_kind || "")} · ${escapeHtml(job.relative_path || "")}</span>
+                <div class="cmgr-download-title">
+                    <span class="cmgr-download-kind">${escapeHtml(labelForRoot(job.root_kind))}</span>
+                    <strong title="${escapeAttr(job.filename || "Download")}">${escapeHtml(job.filename || "Download")}</strong>
                 </div>
-                <b class="${escapeAttr(job.status || "pending")}">${escapeHtml(t(statusKey))}</b>
+                <b class="cmgr-download-status ${escapeAttr(job.status || "pending")}"><i aria-hidden="true"></i>${escapeHtml(t(statusKey))}</b>
             </div>
+            ${path ? `<div class="cmgr-download-path" title="${escapeAttr(job.target_path || path)}">${escapeHtml(path)}</div>` : ""}
             <div class="cmgr-progress${progressClass}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}">
                 <div style="width:${pct}%"></div>
-                <span>${total > 0 ? `${pct}%` : (active ? escapeHtml(t("Waiting for size...")) : `${pct}%`)}</span>
             </div>
-            <div class="cmgr-card-meta">
-                <span>${pct}%</span>
+            <div class="cmgr-download-meta">
+                <strong>${total > 0 ? `${pct}%` : (active ? escapeHtml(t("Waiting for size...")) : `${pct}%`)}</strong>
                 <span>${formatBytes(progress)} / ${total ? formatBytes(total) : escapeHtml(t("unknown"))}</span>
             </div>
             ${job.error ? `<div class="cmgr-warning">${escapeHtml(job.error)}</div>` : ""}
-            ${job.target_path ? `<div class="cmgr-path">${escapeHtml(job.target_path)}</div>` : ""}
-            ${active ? `<div class="cmgr-action-row"><button class="cmgr-secondary" data-action="cancel-download" data-task-id="${escapeAttr(job.id)}">${escapeHtml(t("Cancel Download"))}</button></div>` : ""}
-            ${["failed", "cancelled"].includes(job.status) ? `<div class="cmgr-action-row"><button class="cmgr-secondary" data-action="retry-download" data-task-id="${escapeAttr(job.id)}">${escapeHtml(t("Retry Download"))}</button></div>` : ""}
+            <div class="cmgr-download-actions">
+                ${active ? `<button class="cmgr-secondary" data-action="cancel-download" data-task-id="${escapeAttr(job.id)}">${escapeHtml(t("Cancel Download"))}</button>` : ""}
+                ${["failed", "cancelled"].includes(job.status) ? `<button class="cmgr-primary" data-action="retry-download" data-task-id="${escapeAttr(job.id)}">${escapeHtml(t("Retry Download"))}</button>` : ""}
+                ${active ? "" : `<button class="cmgr-download-remove" data-action="remove-download" data-task-id="${escapeAttr(job.id)}" title="${escapeAttr(t("Remove record"))}" aria-label="${escapeAttr(t("Remove record"))}"><span aria-hidden="true"></span></button>`}
+            </div>
         </article>
     `;
 }
@@ -2517,7 +2561,17 @@ function renderFavoriteResults() {
     if (state.favoritesLoading && !items.length) return renderSearchSkeletons(10);
     return items.length
         ? items.map(renderFavoriteCard).join("")
-        : `<div class="cmgr-empty">${escapeHtml(t("No favorites yet."))}</div>`;
+        : renderCollectionEmptyState({
+            kind: "favorites",
+            kicker: t("Favorites"),
+            title: state.favoriteQuery ? t("No matching favorites") : t("Your favorites will appear here"),
+            description: state.favoriteQuery
+                ? t("Try another keyword or clear the current search.")
+                : state.selectedFavoriteFolderId
+                    ? t("This folder is empty. Move a favorite here to start organizing it.")
+                    : t("Save models from Discover or your local library for quick access later."),
+            hints: [t("Remote models"), t("Local models"), t("Custom folders")],
+        });
 }
 
 function renderFavoriteCard(item, index = 0) {
@@ -2824,11 +2878,16 @@ function bindLibraryCards(root) {
 function bindDownloadsEvents(root) {
     const refresh = root.querySelector('[data-action="refresh-downloads"]');
     if (refresh) refresh.onclick = () => loadDownloads();
+    const clear = root.querySelector('[data-action="clear-downloads"]');
+    if (clear) clear.onclick = () => removeDownloadRecord();
     root.querySelectorAll('[data-action="cancel-download"]').forEach((button) => {
         button.onclick = () => cancelDownload(button.dataset.taskId);
     });
     root.querySelectorAll('[data-action="retry-download"]').forEach((button) => {
         button.onclick = () => retryDownload(button.dataset.taskId);
+    });
+    root.querySelectorAll('[data-action="remove-download"]').forEach((button) => {
+        button.onclick = () => removeDownloadRecord(button.dataset.taskId);
     });
 }
 

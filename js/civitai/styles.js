@@ -4202,6 +4202,980 @@ export function injectStyles() {
             font-weight: 800;
             font-variant-numeric: tabular-nums;
         }
+
+        /* Applied LoRAs form a numbered vertical pipeline, preserving execution order. */
+        .cmgr-lora-applied-toolbar {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto auto;
+            align-items: center;
+            gap: 12px;
+        }
+        .cmgr-lora-applied-toolbar-heading {
+            min-width: 0;
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+        }
+        .cmgr-lora-applied-toolbar-heading > span {
+            min-height: 26px;
+            display: inline-flex;
+            align-items: center;
+            box-sizing: border-box;
+            padding: 0 8px;
+            border: 1px solid color-mix(in srgb, var(--cmgr-accent) 22%, var(--cmgr-border));
+            border-radius: 999px;
+            background: color-mix(in srgb, var(--cmgr-accent) 7%, var(--cmgr-control));
+            color: color-mix(in srgb, var(--cmgr-accent) 72%, var(--cmgr-text));
+            font-size: 11px;
+            font-weight: 760;
+            white-space: nowrap;
+        }
+        .cmgr-lora-applied-toolbar .cmgr-lora-toolbar-note {
+            grid-column: auto;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+        .cmgr-lora-applied-toolbar > .cmgr-danger {
+            min-height: 34px;
+        }
+        .cmgr-lora-applied-list {
+            min-width: 0;
+            height: 100%;
+            box-sizing: border-box;
+            padding: 24px;
+            background:
+                radial-gradient(circle at 50% 0, color-mix(in srgb, var(--cmgr-accent) 6%, transparent), transparent 34%),
+                color-mix(in srgb, var(--cmgr-bg) 88%, transparent);
+        }
+        .cmgr-lora-applied-stack {
+            position: relative;
+            width: min(100%, 820px);
+            display: grid;
+            gap: 14px;
+            margin: 0 auto;
+        }
+        .cmgr-lora-applied-stack::before {
+            content: "";
+            position: absolute;
+            left: 30px;
+            top: 38px;
+            bottom: 38px;
+            width: 1px;
+            background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--cmgr-accent) 28%, var(--cmgr-border)) 10%, color-mix(in srgb, var(--cmgr-accent) 28%, var(--cmgr-border)) 90%, transparent);
+        }
+        .cmgr-lora-applied-item {
+            position: relative;
+            grid-template-columns: 46px 104px minmax(0, 1fr);
+            gap: 16px;
+            align-items: center;
+            min-height: 142px;
+            box-sizing: border-box;
+            padding: 14px 14px 14px 8px;
+            overflow: hidden;
+            border: 1px solid color-mix(in srgb, var(--cmgr-border) 92%, transparent);
+            border-radius: 16px;
+            background:
+                linear-gradient(135deg, color-mix(in srgb, var(--cmgr-panel-soft) 78%, transparent), transparent 56%),
+                var(--cmgr-panel);
+            box-shadow: 0 14px 30px color-mix(in srgb, #000 16%, transparent);
+            opacity: 1;
+            cursor: pointer;
+            transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+        }
+        .cmgr-lora-applied-item::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 70px;
+            right: 18px;
+            height: 1px;
+            background: linear-gradient(90deg, color-mix(in srgb, var(--cmgr-accent) 38%, transparent), transparent 72%);
+        }
+        .cmgr-lora-applied-item:hover {
+            border-color: color-mix(in srgb, var(--cmgr-accent) 30%, var(--cmgr-border));
+            box-shadow: 0 18px 38px color-mix(in srgb, #000 22%, transparent);
+            transform: translateY(-1px);
+        }
+        .cmgr-lora-applied-item.selected {
+            border-color: color-mix(in srgb, var(--cmgr-accent) 62%, var(--cmgr-border));
+            background:
+                linear-gradient(135deg, color-mix(in srgb, var(--cmgr-accent) 11%, var(--cmgr-panel-soft)), transparent 62%),
+                var(--cmgr-panel);
+            box-shadow: 0 18px 42px color-mix(in srgb, #000 24%, transparent), inset 3px 0 0 color-mix(in srgb, var(--cmgr-accent) 76%, transparent);
+        }
+        .cmgr-lora-applied-item:focus-visible {
+            outline: 2px solid color-mix(in srgb, var(--cmgr-accent) 68%, transparent);
+            outline-offset: 3px;
+        }
+        .cmgr-lora-applied-item.is-disabled {
+            opacity: 1;
+        }
+        .cmgr-lora-applied-item.is-disabled .cmgr-lora-applied-preview,
+        .cmgr-lora-applied-item.is-disabled .cmgr-lora-applied-main {
+            filter: saturate(0.4);
+            opacity: 0.62;
+        }
+        .cmgr-lora-applied-order {
+            position: relative;
+            z-index: 2;
+            min-width: 0;
+            display: grid;
+            justify-items: center;
+            gap: 5px;
+        }
+        .cmgr-lora-applied-order > span {
+            color: var(--cmgr-muted);
+            font-size: 8.5px;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+        .cmgr-lora-applied-order > b {
+            width: 38px;
+            height: 38px;
+            display: grid;
+            place-items: center;
+            box-sizing: border-box;
+            border: 1px solid color-mix(in srgb, var(--cmgr-accent) 36%, var(--cmgr-border));
+            border-radius: 50%;
+            background: color-mix(in srgb, var(--cmgr-accent) 11%, var(--cmgr-panel));
+            box-shadow: 0 0 0 5px var(--cmgr-panel), 0 7px 18px color-mix(in srgb, #000 20%, transparent);
+            color: color-mix(in srgb, var(--cmgr-accent) 76%, var(--cmgr-text));
+            font-size: 12px;
+            font-variant-numeric: tabular-nums;
+            line-height: 1;
+        }
+        .cmgr-lora-applied-preview-wrap {
+            position: relative;
+            width: 104px;
+            height: 104px;
+        }
+        .cmgr-lora-applied-preview {
+            width: 104px;
+            height: 104px;
+            box-sizing: border-box;
+            overflow: hidden;
+            border: 1px solid color-mix(in srgb, var(--cmgr-border) 86%, transparent);
+            border-radius: 13px;
+            background: var(--cmgr-control);
+            box-shadow: 0 9px 22px color-mix(in srgb, #000 22%, transparent);
+            transition: filter 0.16s ease, opacity 0.16s ease;
+        }
+        .cmgr-lora-applied-preview img,
+        .cmgr-lora-applied-preview video,
+        .cmgr-lora-applied-preview .cmgr-no-preview {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .cmgr-lora-applied-state-dot {
+            position: absolute;
+            right: -4px;
+            bottom: -4px;
+            z-index: 2;
+            width: 13px;
+            height: 13px;
+            box-sizing: border-box;
+            border: 3px solid var(--cmgr-panel);
+            border-radius: 50%;
+            background: var(--cmgr-success);
+            box-shadow: 0 0 12px color-mix(in srgb, var(--cmgr-success) 62%, transparent);
+        }
+        .cmgr-lora-applied-item.is-disabled .cmgr-lora-applied-state-dot {
+            background: var(--cmgr-muted);
+            box-shadow: none;
+        }
+        .cmgr-lora-applied-main {
+            min-width: 0;
+            width: 100%;
+            overflow: hidden;
+            display: grid;
+            gap: 14px;
+            transition: filter 0.16s ease, opacity 0.16s ease;
+        }
+        .cmgr-lora-applied-head {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 16px;
+        }
+        .cmgr-lora-applied-head > .cmgr-lora-applied-identity {
+            min-width: 0;
+            width: 100%;
+            max-width: 100%;
+            overflow: hidden;
+            display: grid;
+            gap: 4px;
+        }
+        .cmgr-lora-applied-identity > b {
+            display: -webkit-box;
+            overflow: hidden;
+            color: var(--cmgr-text);
+            font-size: 15.5px;
+            font-weight: 820;
+            line-height: 1.3;
+            overflow-wrap: anywhere;
+            text-overflow: ellipsis;
+            white-space: normal;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+        }
+        .cmgr-lora-applied-identity > span {
+            overflow: hidden;
+            color: var(--cmgr-muted);
+            font-size: 11.5px;
+            line-height: 1.35;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .cmgr-lora-applied-identity > small {
+            width: max-content;
+            max-width: 100%;
+            overflow: hidden;
+            padding: 4px 8px;
+            border: 1px solid color-mix(in srgb, var(--cmgr-accent) 18%, var(--cmgr-border));
+            border-radius: 999px;
+            background: color-mix(in srgb, var(--cmgr-accent) 6%, transparent);
+            color: color-mix(in srgb, var(--cmgr-accent) 68%, var(--cmgr-muted));
+            font-size: 9.5px;
+            font-weight: 740;
+            line-height: 1;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .cmgr-lora-switch {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            flex: 0 0 auto;
+            color: var(--cmgr-muted);
+            cursor: pointer;
+            user-select: none;
+        }
+        .cmgr-lora-applied-head > .cmgr-lora-switch {
+            min-width: 0;
+            justify-self: end;
+        }
+        .cmgr-lora-switch input {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            pointer-events: none;
+        }
+        .cmgr-lora-switch-track {
+            position: relative;
+            width: 38px;
+            height: 22px;
+            flex: 0 0 auto;
+            box-sizing: border-box;
+            border: 1px solid color-mix(in srgb, var(--cmgr-border) 92%, transparent);
+            border-radius: 999px;
+            background: color-mix(in srgb, var(--cmgr-muted) 16%, var(--cmgr-control));
+            transition: border-color 0.16s ease, background-color 0.16s ease;
+        }
+        .cmgr-lora-switch-track i {
+            position: absolute;
+            left: 3px;
+            top: 3px;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: color-mix(in srgb, var(--cmgr-muted) 88%, var(--cmgr-text));
+            box-shadow: 0 2px 5px color-mix(in srgb, #000 30%, transparent);
+            transition: background-color 0.16s ease, transform 0.16s ease;
+        }
+        .cmgr-lora-switch input:checked + .cmgr-lora-switch-track {
+            border-color: color-mix(in srgb, var(--cmgr-accent) 58%, var(--cmgr-border));
+            background: color-mix(in srgb, var(--cmgr-accent) 56%, var(--cmgr-control));
+        }
+        .cmgr-lora-switch input:checked + .cmgr-lora-switch-track i {
+            background: var(--cmgr-accent-text);
+            transform: translateX(16px);
+        }
+        .cmgr-lora-switch input:focus-visible + .cmgr-lora-switch-track {
+            outline: 2px solid color-mix(in srgb, var(--cmgr-accent) 50%, transparent);
+            outline-offset: 2px;
+        }
+        .cmgr-lora-switch > b {
+            color: currentColor;
+            font-size: 11px;
+            font-weight: 740;
+            white-space: nowrap;
+        }
+        .cmgr-lora-switch:has(input:checked) {
+            color: color-mix(in srgb, var(--cmgr-success) 68%, var(--cmgr-text));
+        }
+        .cmgr-lora-strength {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr);
+            gap: 8px;
+            box-sizing: border-box;
+            padding: 11px 13px 9px;
+            border: 1px solid color-mix(in srgb, var(--cmgr-border) 84%, transparent);
+            border-radius: 10px;
+            background: color-mix(in srgb, var(--cmgr-control) 54%, transparent);
+        }
+        .cmgr-lora-strength-head,
+        .cmgr-lora-strength-scale {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+        .cmgr-lora-strength-head > b {
+            color: var(--cmgr-muted);
+            font-size: 11px;
+            font-weight: 740;
+        }
+        .cmgr-lora-strength-head > output {
+            min-width: 38px;
+            color: var(--cmgr-text);
+            font-size: 12px;
+            font-weight: 820;
+            font-variant-numeric: tabular-nums;
+            text-align: right;
+        }
+        .cmgr-lora-strength-slider {
+            width: 100%;
+            height: 5px;
+            margin: 0;
+            appearance: none;
+            -webkit-appearance: none;
+            border: 0;
+            border-radius: 999px;
+            outline: none;
+            background: linear-gradient(to right, var(--cmgr-accent) 0 var(--cmgr-strength-percent), color-mix(in srgb, var(--cmgr-muted) 18%, transparent) var(--cmgr-strength-percent) 100%);
+            cursor: pointer;
+        }
+        .cmgr-lora-strength-slider::-webkit-slider-thumb {
+            width: 15px;
+            height: 15px;
+            appearance: none;
+            -webkit-appearance: none;
+            border: 3px solid var(--cmgr-panel);
+            border-radius: 50%;
+            background: var(--cmgr-accent);
+            box-shadow: 0 0 0 1px color-mix(in srgb, var(--cmgr-accent) 50%, var(--cmgr-border)), 0 3px 8px color-mix(in srgb, #000 30%, transparent);
+        }
+        .cmgr-lora-strength-slider::-moz-range-thumb {
+            width: 10px;
+            height: 10px;
+            border: 3px solid var(--cmgr-panel);
+            border-radius: 50%;
+            background: var(--cmgr-accent);
+            box-shadow: 0 0 0 1px color-mix(in srgb, var(--cmgr-accent) 50%, var(--cmgr-border));
+        }
+        .cmgr-lora-strength-slider:focus-visible {
+            outline: 2px solid color-mix(in srgb, var(--cmgr-accent) 50%, transparent);
+            outline-offset: 4px;
+        }
+        .cmgr-lora-strength-scale > i {
+            color: color-mix(in srgb, var(--cmgr-muted) 72%, transparent);
+            font-size: 8.5px;
+            font-style: normal;
+            font-variant-numeric: tabular-nums;
+        }
+        .cmgr-lora-order-actions {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr);
+            gap: 8px;
+            align-content: center;
+        }
+        .cmgr-lora-reorder-buttons {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 6px;
+        }
+        .cmgr-lora-reorder-buttons .cmgr-secondary {
+            min-width: 0;
+            min-height: 34px;
+            padding: 0;
+            font-size: 14px;
+        }
+        .cmgr-lora-reorder-buttons .cmgr-secondary:disabled {
+            opacity: 0.28;
+            cursor: default;
+            filter: none;
+        }
+        .cmgr-lora-order-actions .cmgr-lora-applied-remove {
+            grid-column: auto;
+            min-height: 34px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 5px;
+            padding: 0 9px;
+            font-size: 9.5px;
+        }
+        .cmgr-lora-applied-remove > span {
+            font-size: 15px;
+            font-weight: 500;
+            line-height: 1;
+        }
+
+        .cmgr-lora-applied-detail {
+            background:
+                radial-gradient(circle at 50% 0, color-mix(in srgb, var(--cmgr-accent) 7%, transparent), transparent 30%),
+                var(--cmgr-panel);
+        }
+        .cmgr-lora-applied-detail .cmgr-detail-scroll {
+            padding: 20px;
+        }
+        .cmgr-lora-applied-detail .cmgr-lora-detail-preview {
+            height: 280px;
+            border-radius: 14px;
+        }
+        .cmgr-lora-applied-detail-head {
+            margin-top: 16px;
+        }
+        .cmgr-lora-applied-detail-head h2 {
+            display: -webkit-box;
+            overflow: hidden;
+            font-size: 21px;
+            line-height: 1.3;
+            overflow-wrap: anywhere;
+            white-space: normal;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+        }
+        .cmgr-lora-applied-detail-head p {
+            margin-top: 7px;
+            font-size: 12px;
+        }
+        .cmgr-lora-applied-detail-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 16px 0;
+            padding: 11px 12px;
+            border: 1px solid var(--cmgr-border);
+            border-radius: 11px;
+            background: color-mix(in srgb, var(--cmgr-control) 62%, transparent);
+        }
+        .cmgr-lora-applied-detail-status > span {
+            width: 10px;
+            height: 10px;
+            flex: 0 0 auto;
+            border-radius: 50%;
+            background: var(--cmgr-muted);
+        }
+        .cmgr-lora-applied-detail-status.is-enabled > span {
+            background: var(--cmgr-success);
+            box-shadow: 0 0 13px color-mix(in srgb, var(--cmgr-success) 64%, transparent);
+        }
+        .cmgr-lora-applied-detail-status > div {
+            min-width: 0;
+            display: grid;
+            gap: 3px;
+        }
+        .cmgr-lora-applied-detail-status b {
+            color: var(--cmgr-text);
+            font-size: 12px;
+        }
+        .cmgr-lora-applied-detail-status small {
+            color: var(--cmgr-muted);
+            font-size: 10.5px;
+        }
+        .cmgr-lora-applied-info {
+            gap: 10px;
+            margin: 16px 0 20px;
+        }
+        .cmgr-lora-applied-info div {
+            grid-template-columns: 100px minmax(0, 1fr);
+            font-size: 12.5px;
+        }
+        .cmgr-lora-applied-info span {
+            font-size: 11.5px;
+        }
+        .cmgr-lora-applied-info b {
+            font-size: 12px;
+        }
+        .cmgr-lora-applied-detail .cmgr-section-title {
+            font-size: 12px;
+        }
+        .cmgr-lora-applied-detail .cmgr-trained button,
+        .cmgr-lora-applied-detail .cmgr-trained > span {
+            font-size: 11px;
+        }
+        .cmgr-lora-applied-detail-actions {
+            display: grid;
+            gap: 10px;
+            margin-top: 20px;
+            padding-top: 16px;
+            border-top: 1px solid var(--cmgr-border);
+        }
+        .cmgr-lora-applied-detail-reorder {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+        .cmgr-lora-applied-detail-reorder .cmgr-secondary,
+        .cmgr-lora-applied-detail-remove {
+            min-height: 40px;
+            font-size: 11.5px;
+        }
+        .cmgr-lora-applied-detail-reorder .cmgr-secondary {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+        }
+        .cmgr-lora-applied-detail-reorder .cmgr-secondary > span,
+        .cmgr-lora-applied-detail-remove > span {
+            font-size: 16px;
+            line-height: 1;
+        }
+        .cmgr-lora-applied-detail-reorder .cmgr-secondary:disabled {
+            opacity: 0.34;
+            cursor: default;
+            filter: none;
+        }
+        .cmgr-lora-applied-detail-remove {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+        }
+
+        @media (max-width: 840px) {
+            .cmgr-lora-applied-toolbar {
+                grid-template-columns: minmax(0, 1fr) auto;
+            }
+            .cmgr-lora-applied-toolbar .cmgr-lora-toolbar-note {
+                grid-column: 1 / -1;
+                grid-row: 2;
+            }
+            .cmgr-lora-applied-item {
+                grid-template-columns: 42px 84px minmax(0, 1fr);
+                gap: 12px;
+                padding: 12px 12px 12px 7px;
+            }
+            .cmgr-lora-applied-stack::before {
+                left: 27px;
+            }
+            .cmgr-lora-applied-preview-wrap,
+            .cmgr-lora-applied-preview {
+                width: 84px;
+                height: 84px;
+            }
+        }
+        @media (max-width: 560px) {
+            .cmgr-lora-applied-list {
+                padding: 14px;
+            }
+            .cmgr-lora-applied-toolbar-heading {
+                align-items: flex-start;
+                flex-direction: column;
+                gap: 4px;
+            }
+            .cmgr-lora-applied-item {
+                grid-template-columns: 38px 62px minmax(0, 1fr);
+                gap: 9px;
+            }
+            .cmgr-lora-applied-stack::before {
+                left: 25px;
+            }
+            .cmgr-lora-applied-order > span {
+                display: none;
+            }
+            .cmgr-lora-applied-preview-wrap,
+            .cmgr-lora-applied-preview {
+                width: 62px;
+                height: 62px;
+            }
+            .cmgr-lora-applied-head {
+                gap: 8px;
+            }
+            .cmgr-lora-switch > b {
+                display: none;
+            }
+            .cmgr-lora-strength {
+                padding-inline: 8px;
+            }
+        }
+
+        /* Rich collection placeholders mirror the permanent detail rail. */
+        .cmgr-empty-state {
+            position: relative;
+            grid-column: 1 / -1;
+            width: 100%;
+            min-height: clamp(320px, 55vh, 560px);
+            overflow: hidden;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+            padding: clamp(28px, 5vh, 52px) 24px;
+            border: 1px solid color-mix(in srgb, var(--cmgr-border) 82%, transparent);
+            border-radius: calc(var(--cmgr-radius) + 6px);
+            background:
+                radial-gradient(circle at 50% 15%, color-mix(in srgb, var(--cmgr-accent) 14%, transparent), transparent 36%),
+                linear-gradient(155deg, color-mix(in srgb, var(--cmgr-panel-soft) 92%, transparent), color-mix(in srgb, var(--cmgr-panel) 97%, transparent));
+            color: var(--cmgr-muted);
+            text-align: center;
+        }
+        .cmgr-empty-state::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            opacity: 0.28;
+            background-image: radial-gradient(color-mix(in srgb, var(--cmgr-text) 18%, transparent) 0.7px, transparent 0.7px);
+            background-size: 15px 15px;
+            mask-image: linear-gradient(to bottom, #000, transparent 78%);
+        }
+        .cmgr-empty-state .cmgr-empty-detail-art {
+            width: 132px;
+            height: 116px;
+        }
+        .cmgr-empty-state .cmgr-empty-detail-card {
+            width: 72px;
+            height: 84px;
+        }
+        .cmgr-empty-state .cmgr-empty-detail-card.card-front::before {
+            height: 38px;
+        }
+        .cmgr-empty-state-symbol {
+            position: absolute;
+            left: 50%;
+            top: 43%;
+            z-index: 2;
+            width: 26px;
+            height: 26px;
+            display: grid;
+            place-items: center;
+            transform: translate(-68%, -80%) rotate(-4deg);
+            color: color-mix(in srgb, var(--cmgr-accent) 78%, var(--cmgr-text));
+            font-size: 22px;
+            font-style: normal;
+            font-weight: 820;
+            line-height: 1;
+            text-shadow: 0 0 16px color-mix(in srgb, var(--cmgr-accent) 42%, transparent);
+        }
+        .cmgr-empty-state-symbol::before { content: "·"; }
+        .cmgr-empty-state[data-empty-kind="favorites"] .cmgr-empty-state-symbol::before { content: "★"; }
+        .cmgr-empty-state[data-empty-kind="downloads"] .cmgr-empty-state-symbol::before { content: "↓"; }
+        .cmgr-empty-state[data-empty-kind="library"] .cmgr-empty-state-symbol::before { content: "▦"; }
+        .cmgr-empty-state[data-empty-kind="applied"] .cmgr-empty-state-symbol::before { content: "+"; }
+        .cmgr-empty-state[data-empty-kind="discover"] .cmgr-empty-state-symbol {
+            width: 18px;
+            height: 18px;
+            border: 2px solid currentColor;
+            border-radius: 50%;
+        }
+        .cmgr-empty-state[data-empty-kind="discover"] .cmgr-empty-state-symbol::before {
+            content: "";
+            position: absolute;
+            right: -7px;
+            bottom: -5px;
+            width: 8px;
+            height: 2px;
+            border-radius: 999px;
+            background: currentColor;
+            transform: rotate(45deg);
+            transform-origin: left center;
+        }
+        .cmgr-empty-state .cmgr-empty-detail-copy,
+        .cmgr-empty-state .cmgr-empty-detail-features {
+            position: relative;
+            z-index: 1;
+        }
+        .cmgr-empty-state h2 {
+            margin: 0;
+            color: var(--cmgr-text);
+            font-size: clamp(18px, 2vw, 22px);
+            line-height: 1.3;
+        }
+        .cmgr-empty-state p {
+            max-width: 460px;
+            margin: 0;
+            color: var(--cmgr-muted);
+            font-size: 12px;
+            line-height: 1.65;
+        }
+
+        /* Download history uses compact responsive cards instead of full-width bars. */
+        .cmgr-download-toolbar {
+            justify-content: space-between;
+            flex-wrap: nowrap;
+        }
+        .cmgr-download-toolbar-heading {
+            min-width: 0;
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+        }
+        .cmgr-download-toolbar-heading > span {
+            overflow: hidden;
+            color: var(--cmgr-muted);
+            font-size: 11px;
+            font-weight: 650;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .cmgr-download-toolbar-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex: 0 0 auto;
+        }
+        .cmgr-lora-download-toolbar {
+            display: flex;
+            justify-content: space-between;
+        }
+        .cmgr-lora-applied-list > .cmgr-empty-state {
+            flex: 1;
+        }
+        .cmgr-download-list {
+            min-height: 0;
+            flex: 1;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            align-content: start;
+            gap: 16px;
+            padding: 22px 24px;
+        }
+        .cmgr-lora-download-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            align-content: start;
+            gap: 16px;
+            padding: 22px 24px;
+        }
+        .cmgr-download {
+            position: relative;
+            min-width: 0;
+            min-height: 210px;
+            display: flex;
+            flex-direction: column;
+            box-sizing: border-box;
+            padding: 16px;
+            border: 1px solid color-mix(in srgb, var(--cmgr-border) 92%, transparent);
+            border-radius: 14px;
+            background:
+                linear-gradient(145deg, color-mix(in srgb, var(--cmgr-panel-soft) 78%, transparent), transparent 62%),
+                var(--cmgr-panel);
+            box-shadow: 0 14px 30px color-mix(in srgb, #000 18%, transparent);
+            transition: border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+        }
+        .cmgr-download:hover {
+            border-color: color-mix(in srgb, var(--cmgr-accent) 28%, var(--cmgr-border));
+            box-shadow: 0 18px 38px color-mix(in srgb, #000 24%, transparent);
+            transform: translateY(-1px);
+        }
+        .cmgr-download::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 20px;
+            right: 20px;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--cmgr-accent) 42%, transparent), transparent);
+        }
+        .cmgr-download-head {
+            min-width: 0;
+            align-items: flex-start;
+        }
+        .cmgr-download-title {
+            min-width: 0;
+            display: grid;
+            gap: 6px;
+        }
+        .cmgr-download-title strong {
+            overflow: hidden;
+            color: var(--cmgr-text);
+            font-size: 13px;
+            line-height: 1.35;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .cmgr-download-kind {
+            width: max-content;
+            max-width: 100%;
+            overflow: hidden;
+            color: color-mix(in srgb, var(--cmgr-accent) 70%, var(--cmgr-text));
+            font-size: 9px;
+            font-weight: 820;
+            letter-spacing: 0.08em;
+            text-overflow: ellipsis;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+        .cmgr-download-status {
+            min-height: 24px;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            flex: 0 0 auto;
+            box-sizing: border-box;
+            padding: 0 8px;
+            border: 1px solid var(--cmgr-border);
+            border-radius: 999px;
+            background: color-mix(in srgb, var(--cmgr-control) 72%, transparent);
+            color: var(--cmgr-muted);
+            font-size: 9.5px;
+            font-weight: 780;
+            line-height: 1;
+        }
+        .cmgr-download-status i {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+            box-shadow: 0 0 9px currentColor;
+        }
+        .cmgr-download-status.completed { color: var(--cmgr-success); }
+        .cmgr-download-status.failed { color: var(--cmgr-danger); }
+        .cmgr-download-status.downloading,
+        .cmgr-download-status.pending { color: var(--cmgr-info); }
+        .cmgr-download-status.cancelling { color: var(--cmgr-warning); }
+        .cmgr-download-path {
+            min-width: 0;
+            margin-top: 10px;
+            overflow: hidden;
+            color: var(--cmgr-muted);
+            font-size: 10.5px;
+            line-height: 1.4;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .cmgr-download > .cmgr-progress {
+            height: 7px;
+            margin: 16px 0 8px;
+            border: 0;
+            background: color-mix(in srgb, var(--cmgr-muted) 14%, transparent);
+        }
+        .cmgr-download.is-failed > .cmgr-progress div,
+        .cmgr-download.is-cancelled > .cmgr-progress div { background: var(--cmgr-danger); }
+        .cmgr-download-meta {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            color: var(--cmgr-muted);
+            font-size: 10px;
+            font-variant-numeric: tabular-nums;
+        }
+        .cmgr-download-meta strong {
+            overflow: hidden;
+            color: var(--cmgr-text);
+            font-size: 10.5px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .cmgr-download > .cmgr-warning {
+            margin: 10px 0 0;
+            padding: 8px 9px;
+            border-radius: 8px;
+            font-size: 10px;
+            line-height: 1.4;
+        }
+        .cmgr-download-actions {
+            min-height: 34px;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 7px;
+            margin-top: auto;
+            padding-top: 14px;
+        }
+        .cmgr-download-actions .cmgr-primary,
+        .cmgr-download-actions .cmgr-secondary {
+            min-height: 32px;
+            padding-inline: 10px;
+            font-size: 10px;
+        }
+        .cmgr-download-remove {
+            width: 32px;
+            height: 32px;
+            display: grid;
+            place-items: center;
+            box-sizing: border-box;
+            padding: 0;
+            border: 1px solid color-mix(in srgb, var(--cmgr-danger) 20%, var(--cmgr-border));
+            border-radius: 9px;
+            background: color-mix(in srgb, var(--cmgr-danger) 5%, var(--cmgr-control));
+            color: color-mix(in srgb, var(--cmgr-danger) 72%, var(--cmgr-muted));
+            cursor: pointer;
+        }
+        .cmgr-download-remove > span {
+            position: relative;
+            width: 10px;
+            height: 11px;
+            box-sizing: border-box;
+            border: 1.5px solid currentColor;
+            border-top: 0;
+            border-radius: 0 0 2px 2px;
+        }
+        .cmgr-download-remove > span::before,
+        .cmgr-download-remove > span::after {
+            content: "";
+            position: absolute;
+            left: 50%;
+            height: 1.5px;
+            border-radius: 999px;
+            background: currentColor;
+            transform: translateX(-50%);
+        }
+        .cmgr-download-remove > span::before { top: -4px; width: 13px; }
+        .cmgr-download-remove > span::after { top: -6px; width: 5px; }
+        .cmgr-download-remove:hover {
+            border-color: color-mix(in srgb, var(--cmgr-danger) 50%, var(--cmgr-border));
+            background: color-mix(in srgb, var(--cmgr-danger) 13%, var(--cmgr-control));
+            color: var(--cmgr-danger);
+        }
+
+        /* Draw the add mark geometrically so it is centered independent of font metrics. */
+        .cmgr-favorite-folder-add {
+            padding: 0;
+            font-size: 0;
+        }
+        .cmgr-favorite-folder-add > span {
+            position: relative;
+            width: 12px;
+            height: 12px;
+            display: block;
+        }
+        .cmgr-favorite-folder-add > span::before,
+        .cmgr-favorite-folder-add > span::after {
+            content: "";
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            border-radius: 999px;
+            background: currentColor;
+            transform: translate(-50%, -50%);
+        }
+        .cmgr-favorite-folder-add > span::before { width: 12px; height: 2px; }
+        .cmgr-favorite-folder-add > span::after { width: 2px; height: 12px; }
+
+        @media (max-width: 720px) {
+            .cmgr-download-toolbar {
+                align-items: stretch;
+                flex-direction: column;
+            }
+            .cmgr-download-toolbar-actions {
+                justify-content: flex-end;
+            }
+            .cmgr-lora-download-toolbar {
+                align-items: stretch;
+                flex-direction: column;
+            }
+            .cmgr-download-list {
+                grid-template-columns: minmax(0, 1fr);
+                padding: 16px;
+            }
+            .cmgr-lora-download-list {
+                grid-template-columns: minmax(0, 1fr);
+                padding: 16px;
+            }
+            .cmgr-empty-state {
+                min-height: 360px;
+            }
+        }
         @media (max-width: 480px) {
             .cmgr-favorite-controls {
                 align-items: stretch;

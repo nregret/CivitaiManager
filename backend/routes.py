@@ -17,6 +17,7 @@ ROUTE_SPECS = (
     ("get", "/download-status", "download_status_api"),
     ("post", "/download/cancel", "cancel_download_api"),
     ("post", "/download/retry", "retry_download_api"),
+    ("post", "/download/remove", "remove_download_api"),
     ("get", "/library", "library_api"),
     ("get", "/favorites", "favorites_api"),
     ("post", "/favorites/item", "favorite_item_api"),

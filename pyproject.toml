@@ -5,8 +5,14 @@ description = "Browse, download, and organize Civitai assets inside ComfyUI."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
+classifiers = [
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Repository = "https://github.com/nregret/CivitaiManager"
+"Bug Tracker" = "https://github.com/nregret/CivitaiManager/issues"
 
 [tool.comfy]
 PublisherId = "yunlong"
 DisplayName = "CivitaiManager"
-Icon = ""

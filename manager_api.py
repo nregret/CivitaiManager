@@ -2295,6 +2295,35 @@ async def retry_download_api(request: web.Request) -> web.Response:
         return web.json_response({"success": False, "error": str(exc)}, status=500)
 
 
+async def remove_download_api(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("Download removal payload must be an object")
+        task_id = str(body.get("task_id") or "")
+        task_ids = body.get("task_ids")
+        if task_id and task_ids is not None:
+            raise ValueError("Provide task_id or task_ids, not both")
+        if task_ids is not None and not isinstance(task_ids, list):
+            raise ValueError("task_ids must be an array")
+        store = _download_store()
+        removed = (
+            store.remove_finished_many([str(item) for item in task_ids if str(item)])
+            if task_ids is not None
+            else store.remove_finished(task_id)
+        )
+        if task_id and not removed:
+            job = store.snapshot(task_id)
+            if job.get("status") == "not_found":
+                return web.json_response({"success": False, "error": "Download record not found"}, status=404)
+            return web.json_response({"success": False, "error": "Active downloads cannot be removed"}, status=409)
+        return web.json_response({"success": True, "removed": removed})
+    except ValueError as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"success": False, "error": str(exc)}, status=500)
+
+
 async def library_api(request: web.Request) -> web.Response:
     try:
         force = request.query.get("force", "").lower() in {"1", "true", "yes"}

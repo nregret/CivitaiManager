@@ -610,6 +610,31 @@ class DownloadJobTests(unittest.TestCase):
 
         self.assertIsNone(store.retry_payload("completed"))
 
+    def test_remove_finished_never_removes_active_jobs(self):
+        store = self.make_store()
+        now = int(time.time())
+        store.add({"id": "active", "status": "downloading", "created_at": now}, {})
+        store.add({"id": "completed", "status": "completed", "created_at": now}, {})
+        store.add({"id": "failed", "status": "failed", "created_at": now}, {})
+
+        self.assertEqual(store.remove_finished("active"), 0)
+        self.assertEqual(store.remove_finished("completed"), 1)
+        self.assertEqual(store.remove_finished(), 1)
+        self.assertEqual(set(store.snapshot()), {"active"})
+
+    def test_remove_finished_many_only_removes_selected_terminal_jobs(self):
+        store = self.make_store()
+        now = int(time.time())
+        for task_id, status in {
+            "lora-done": "completed",
+            "checkpoint-done": "completed",
+            "lora-active": "downloading",
+        }.items():
+            store.add({"id": task_id, "status": status, "created_at": now}, {})
+
+        self.assertEqual(store.remove_finished_many(["lora-done", "lora-active"]), 1)
+        self.assertEqual(set(store.snapshot()), {"checkpoint-done", "lora-active"})
+
 
 class DownloadApiAsyncTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -696,6 +721,40 @@ class DownloadApiAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(response.body["retry_of"], "failed")
         enqueue.assert_called_once_with(payload)
+
+    async def test_remove_endpoint_clears_only_finished_downloads(self):
+        now = int(time.time())
+        manager._DOWNLOAD_STORE.add({"id": "active", "status": "downloading", "created_at": now}, {})
+        manager._DOWNLOAD_STORE.add({"id": "completed", "status": "completed", "created_at": now}, {})
+
+        response = await manager.remove_download_api(_JsonRequest({}))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.body["removed"], 1)
+        self.assertEqual(set(manager._DOWNLOAD_STORE.snapshot()), {"active"})
+
+    async def test_remove_endpoint_rejects_active_download(self):
+        manager._DOWNLOAD_STORE.add({
+            "id": "active",
+            "status": "pending",
+            "created_at": int(time.time()),
+        }, {})
+
+        response = await manager.remove_download_api(_JsonRequest({"task_id": "active"}))
+
+        self.assertEqual(response.status, 409)
+        self.assertIn("active", manager._DOWNLOAD_STORE.snapshot())
+
+    async def test_remove_endpoint_clears_selected_finished_downloads(self):
+        now = int(time.time())
+        manager._DOWNLOAD_STORE.add({"id": "lora", "status": "completed", "created_at": now}, {})
+        manager._DOWNLOAD_STORE.add({"id": "checkpoint", "status": "completed", "created_at": now}, {})
+
+        response = await manager.remove_download_api(_JsonRequest({"task_ids": ["lora"]}))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.body["removed"], 1)
+        self.assertEqual(set(manager._DOWNLOAD_STORE.snapshot()), {"checkpoint"})
 
 
 class AssetApiAsyncTests(unittest.IsolatedAsyncioTestCase):

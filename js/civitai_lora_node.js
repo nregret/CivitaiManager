@@ -12,6 +12,7 @@ import {
     bindFavoriteFolderSidebar,
     bindSearchCombo,
     ensureNotificationHost,
+    renderCollectionEmptyState,
     renderFavoriteCardMark,
     renderFavoriteControls,
     renderFavoriteFolderSidebar,
@@ -92,6 +93,7 @@ const popup = {
     selectedFavoriteKey: "",
     selectedFavoriteFolderId: "",
     favoriteFolderEditor: null,
+    selectedAppliedIndex: 0,
     downloads: {},
     pendingApply: new Map(),
     scroll: {
@@ -451,10 +453,33 @@ function clearNodeLoraControlHover(node) {
     if (changed) redrawNode(node);
 }
 
-function createNodeLoraControl({ entry, nodeWidth, onToggle, onRemove }) {
+function nextNodeWidgetGeneration(node) {
+    const current = Number(node?._cmgrWidgetGeneration || 0);
+    const next = Number.isSafeInteger(current) && current >= 0 ? current + 1 : 1;
+    node._cmgrWidgetGeneration = next;
+    return next;
+}
+
+function invisibleWidgetIdentity(...values) {
+    const encode = (value) => Math.max(0, Number(value) || 0)
+        .toString(2)
+        .replaceAll("0", "\u200B")
+        .replaceAll("1", "\u200C");
+    return `\u2063${values.map(encode).join("\u2060")}`;
+}
+
+function findNodeLoraIndex(node, entryKey) {
+    return Array.isArray(node?._cmgrLoras)
+        ? node._cmgrLoras.findIndex((item) => loraKey(item) === entryKey)
+        : -1;
+}
+
+function createNodeLoraControl({ entry, nodeWidth, widgetIdentity, onToggle, onRemove }) {
     const widget = {
         type: "custom",
-        name: `cmgr_lora_control:${entry.name}`,
+        // Vue nodes bind legacy widgets by name and keep that instance locally.
+        // A fresh identity forces WidgetLegacy to rebind after a dynamic rebuild.
+        name: `cmgr_lora_control:${widgetIdentity}:${entry.name}`,
         value: entry.enabled !== false,
         options: {},
         serialize: false,
@@ -542,7 +567,21 @@ function createNodeLoraControl({ entry, nodeWidth, onToggle, onRemove }) {
             ctx.restore();
         },
         mouse(event, pointerOffset, node) {
-            if (event?.type && !["pointerdown", "mousedown"].includes(event.type)) return false;
+            const eventType = String(event?.type || "");
+            if (["pointerup", "mouseup"].includes(eventType)) {
+                const pressedRegion = widget.__cmgrPressedRegion || "";
+                widget.__cmgrPressedRegion = "";
+                if (pressedRegion === "remove") {
+                    // Vue's WidgetLegacy uses widget-local coordinates on down,
+                    // but its shared pointer finalizer supplies node coordinates
+                    // on up. The down hit already proved this is the remove area.
+                    onRemove?.();
+                    redrawNode(node);
+                    return true;
+                }
+                return false;
+            }
+            if (eventType && !["pointerdown", "mousedown"].includes(eventType)) return false;
             const region = nodeLoraControlHitRegion(widget, pointerOffset, node);
             if (region === "toggle") {
                 const enabled = widget.__cmgrLoraEntry.enabled === false;
@@ -559,7 +598,11 @@ function createNodeLoraControl({ entry, nodeWidth, onToggle, onRemove }) {
                 return true;
             }
             if (region === "remove") {
-                onRemove?.();
+                // Rebuilding node.widgets during pointerdown leaves ComfyUI/Vue
+                // holding the removed widget until pointerup. Rebuild only once
+                // the current pointer lifecycle is finishing.
+                widget.__cmgrPressedRegion = "remove";
+                redrawNode(node);
                 return true;
             }
             return false;
@@ -590,6 +633,12 @@ function removeDynamicNodeWidgets(node) {
         if (!widget?.__cmgrLoraWidget) continue;
         const element = widget.element || widget.inputEl || widget.el;
         element?.remove?.();
+        if (typeof node.removeWidget === "function") {
+            try {
+                node.removeWidget(widget);
+                continue;
+            } catch (_) {}
+        }
         node.widgets.splice(index, 1);
     }
 }
@@ -598,31 +647,40 @@ function syncNodeWidgets(node, value) {
     if (!node) return;
     const width = Math.max(Number(node.size?.[0] || 0), 300);
     const loras = normalizeLoraList(value);
+    const generation = nextNodeWidgetGeneration(node);
     removeDynamicNodeWidgets(node);
     node._cmgrLoras = loras;
 
     loras.forEach((entry, index) => {
         let strength = null;
+        const entryKey = loraKey(entry);
+        const widgetIdentity = `${generation}:${index}`;
         const control = node.addCustomWidget(createNodeLoraControl({
             entry,
             nodeWidth: width,
+            widgetIdentity,
             onToggle: (enabled) => {
-                const current = node._cmgrLoras[index];
+                const currentIndex = findNodeLoraIndex(node, entryKey);
+                const current = node._cmgrLoras[currentIndex];
                 if (!current) return;
                 current.enabled = Boolean(enabled);
                 if (strength) strength.disabled = !current.enabled;
                 writeNodeData(node);
             },
             onRemove: () => {
-                const next = node._cmgrLoras.filter((_, itemIndex) => itemIndex !== index);
+                const currentIndex = findNodeLoraIndex(node, entryKey);
+                if (currentIndex < 0) return;
+                const next = node._cmgrLoras.filter((_, itemIndex) => itemIndex !== currentIndex);
                 writeNodeData(node, next);
                 syncNodeWidgets(node, next);
                 if (popup.node === node && overlay?.classList.contains("show")) renderPopup();
             },
         }));
 
-        strength = node.addWidget("slider", `   ${t("Strength")}${"\u200B".repeat(index)}`, entry.strength_model, (next) => {
-            const current = node._cmgrLoras[index];
+        const strengthIdentity = invisibleWidgetIdentity(generation, index, 1);
+        strength = node.addWidget("slider", `   ${t("Strength")}${strengthIdentity}`, entry.strength_model, (next) => {
+            const currentIndex = findNodeLoraIndex(node, entryKey);
+            const current = node._cmgrLoras[currentIndex];
             const number = Number(next);
             if (!current || !Number.isFinite(number)) return;
             current.strength_model = Number(number.toFixed(2));
@@ -674,12 +732,19 @@ function addLoraToTargetNode(node, entry, notify = false) {
     }
     writeNodeData(node, next);
     syncNodeWidgets(node, next);
-    if (popup.node === node && overlay?.classList.contains("show")) renderPopup();
+    if (popup.node === node && overlay?.classList.contains("show")) {
+        if (popup.tab === "applied") popup.selectedAppliedIndex = existingIndex >= 0 ? existingIndex : next.length - 1;
+        renderPopup();
+    }
 }
 
 function removeLoraFromNode(index) {
     if (!popup.node) return;
     const next = normalizeLoraList(popup.node._cmgrLoras).filter((_, itemIndex) => itemIndex !== index);
+    const selectedIndex = Number(popup.selectedAppliedIndex || 0);
+    popup.selectedAppliedIndex = selectedIndex > index
+        ? selectedIndex - 1
+        : Math.min(selectedIndex, Math.max(0, next.length - 1));
     writeNodeData(popup.node, next);
     syncNodeWidgets(popup.node, next);
     renderPopup();
@@ -691,6 +756,9 @@ function updateLoraOrder(index, delta) {
     const target = index + delta;
     if (target < 0 || target >= next.length) return;
     [next[index], next[target]] = [next[target], next[index]];
+    const selectedIndex = Number(popup.selectedAppliedIndex || 0);
+    if (selectedIndex === index) popup.selectedAppliedIndex = target;
+    else if (selectedIndex === target) popup.selectedAppliedIndex = index;
     writeNodeData(popup.node, next);
     syncNodeWidgets(popup.node, next);
     renderPopup();
@@ -699,6 +767,7 @@ function updateLoraOrder(index, delta) {
 function openPopup(node) {
     popup.node = node;
     popup.error = "";
+    popup.selectedAppliedIndex = 0;
     createOverlay();
     overlay.classList.add("show");
     renderPopup();
@@ -1493,7 +1562,13 @@ function renderDiscover() {
 
 function renderRemoteResults() {
     if (!popup.remoteItems.length && popup.remoteLoading) return renderSkeletons();
-    if (!popup.remoteItems.length) return `<div class="cmgr-empty">${escapeHtml(t("No LoRAs found."))}</div>`;
+    if (!popup.remoteItems.length) return renderCollectionEmptyState({
+        kind: "discover",
+        kicker: t("Discover"),
+        title: t("No matching {kind} found", { kind: "LoRA" }),
+        description: t("Try another keyword or loosen the filters to explore more from Civitai."),
+        hints: [t("Change keywords"), t("Adjust filters")],
+    });
     return `
         ${popup.remoteItems.map((model, index) => renderRemoteCard(model, index)).join("")}
         ${popup.remoteLoading && !popup.remoteResetting ? renderLoadingMoreSkeletons() : ""}
@@ -1738,7 +1813,17 @@ function renderFavoriteResults() {
     if (popup.favoritesLoading && !items.length) return renderSkeletons();
     return items.length
         ? items.map(renderFavoriteCard).join("")
-        : `<div class="cmgr-empty">${escapeHtml(t("No favorites yet."))}</div>`;
+        : renderCollectionEmptyState({
+            kind: "favorites",
+            kicker: t("Favorites"),
+            title: popup.favoriteQuery ? t("No matching favorites") : t("Your favorites will appear here"),
+            description: popup.favoriteQuery
+                ? t("Try another keyword or clear the current search.")
+                : popup.selectedFavoriteFolderId
+                    ? t("This folder is empty. Move a favorite here to start organizing it.")
+                    : t("Save models from Discover or your local library for quick access later."),
+            hints: [t("Remote models"), t("Local models"), t("Custom folders")],
+        });
 }
 
 function renderFavoriteCard(item, index = 0) {
@@ -2036,7 +2121,13 @@ function renderLocal() {
 function renderLocalResults() {
     const items = filteredLocalItems();
     if (popup.libraryLoading && !items.length) return renderSkeletons();
-    if (!items.length) return `<div class="cmgr-empty">${escapeHtml(t("No local LoRAs found."))}</div>`;
+    if (!items.length) return renderCollectionEmptyState({
+        kind: "library",
+        kicker: t("Library"),
+        title: t("No local {kind} found", { kind: "LoRA" }),
+        description: t("Try changing the current filters or refresh the local model library."),
+        hints: [t("Change filters"), t("Refresh library")],
+    });
     return items.map(renderLocalCard).join("");
 }
 
@@ -2344,54 +2435,150 @@ async function manageSelectedAsset(action) {
 
 function renderApplied() {
     const loras = normalizeLoraList(popup.node?._cmgrLoras);
+    const selectedIndex = loras.length
+        ? Math.min(Math.max(0, Number(popup.selectedAppliedIndex || 0)), loras.length - 1)
+        : -1;
+    popup.selectedAppliedIndex = Math.max(0, selectedIndex);
+    const selected = selectedIndex >= 0 ? loras[selectedIndex] : null;
     return `
-        <section class="cmgr-page cmgr-lora-page">
-            <div class="cmgr-toolbar cmgr-lora-toolbar">
-                <h2>${escapeHtml(t("Applied to Node"))}</h2>
+        <section class="cmgr-page cmgr-lora-page cmgr-lora-applied-page">
+            <div class="cmgr-toolbar cmgr-lora-toolbar cmgr-lora-applied-toolbar">
+                <div class="cmgr-lora-applied-toolbar-heading">
+                    <h2>${escapeHtml(t("Applied to Node"))}</h2>
+                    ${loras.length ? `<span>${escapeHtml(t("{count} LoRAs applied", { count: loras.length }))}</span>` : ""}
+                </div>
                 <span class="cmgr-lora-toolbar-note">${escapeHtml(t("LoRAs run from top to bottom."))}</span>
                 ${loras.length ? `<button class="cmgr-danger" data-action="clear-applied">${escapeHtml(t("Remove All"))}</button>` : ""}
             </div>
-            <div class="cmgr-lora-applied-list">
-                ${loras.length ? loras.map(renderAppliedItem).join("") : `<div class="cmgr-empty">${escapeHtml(t("No LoRAs applied to this node."))}</div>`}
+            <div class="cmgr-split has-detail cmgr-lora-split cmgr-lora-applied-split">
+                <div class="cmgr-lora-applied-list">
+                    ${loras.length ? `<div class="cmgr-lora-applied-stack">${loras.map(renderAppliedItem).join("")}</div>` : renderCollectionEmptyState({
+                        kind: "applied",
+                        kicker: t("Applied to Node"),
+                        title: t("Nothing applied to this node yet"),
+                        description: t("Choose a local LoRA or download one from Discover, then apply it to this node."),
+                        hints: [t("Browse LoRAs"), t("Tune strengths"), t("Reorder anytime")],
+                    })}
+                </div>
+                <aside class="cmgr-detail cmgr-lora-detail cmgr-lora-applied-detail">
+                    ${selected ? renderAppliedDetail(selected, selectedIndex, loras.length) : renderEmptyDetail(
+                        t("Select an applied LoRA"),
+                        t("Click a flow card to inspect its information and manage its execution order."),
+                        "applied",
+                    )}
+                </aside>
             </div>
         </section>
     `;
 }
 
 function renderAppliedItem(entry, index) {
+    const strength = Number(entry.strength_model);
+    const safeStrength = Number.isFinite(strength) ? Math.min(4, Math.max(-4, strength)) : 1;
+    const strengthPercent = ((safeStrength + 4) / 8) * 100;
+    const displayName = entry.display_name || shortLoraName(entry, 60);
+    const selected = Number(popup.selectedAppliedIndex || 0) === index;
     return `
-        <article class="cmgr-lora-applied-item ${entry.enabled ? "" : "is-disabled"}" data-applied-index="${index}">
-            <div class="cmgr-lora-applied-preview">${renderPreview(entry.preview_url, entry.display_name || entry.name)}</div>
+        <article class="cmgr-lora-applied-item ${entry.enabled ? "" : "is-disabled"} ${selected ? "selected" : ""}" data-applied-index="${index}" tabindex="0" aria-selected="${selected ? "true" : "false"}">
+            <div class="cmgr-lora-applied-order" title="${escapeAttr(t("Execution order"))}">
+                <span>${escapeHtml(t("Order"))}</span>
+                <b>${String(index + 1).padStart(2, "0")}</b>
+            </div>
+            <div class="cmgr-lora-applied-preview-wrap">
+                <div class="cmgr-lora-applied-preview">${renderPreview(entry.preview_url, displayName)}</div>
+                <span class="cmgr-lora-applied-state-dot" title="${escapeAttr(t(entry.enabled ? "Enabled" : "Disabled"))}" aria-label="${escapeAttr(t(entry.enabled ? "Enabled" : "Disabled"))}"></span>
+            </div>
             <div class="cmgr-lora-applied-main">
                 <div class="cmgr-lora-applied-head">
-                    <div><b>${escapeHtml(entry.display_name || shortLoraName(entry, 60))}</b><span>${escapeHtml(entry.name)}</span></div>
-                    <label class="cmgr-lora-toggle"><input type="checkbox" data-applied-enabled="${index}" ${entry.enabled ? "checked" : ""} /> ${escapeHtml(t("Enabled"))}</label>
+                    <div class="cmgr-lora-applied-identity">
+                        <b title="${escapeAttr(displayName)}">${escapeHtml(displayName)}</b>
+                        <span title="${escapeAttr(entry.name)}">${escapeHtml(entry.name)}</span>
+                        ${entry.base_model ? `<small>${escapeHtml(entry.base_model)}</small>` : ""}
+                    </div>
+                    <label class="cmgr-lora-switch" title="${escapeAttr(t(entry.enabled ? "Disable LoRA" : "Enable LoRA"))}">
+                        <input type="checkbox" data-applied-enabled="${index}" ${entry.enabled ? "checked" : ""} />
+                        <span class="cmgr-lora-switch-track" aria-hidden="true"><i></i></span>
+                        <b>${escapeHtml(t(entry.enabled ? "Enabled" : "Disabled"))}</b>
+                    </label>
                 </div>
                 <label class="cmgr-lora-strength">
-                    <span>${escapeHtml(t("Model Strength"))}</span>
-                    <input type="range" min="-4" max="4" step="0.05" value="${escapeAttr(entry.strength_model)}" data-applied-strength="${index}" />
-                    <output>${Number(entry.strength_model).toFixed(2)}</output>
+                    <span class="cmgr-lora-strength-head"><b>${escapeHtml(t("Model Strength"))}</b><output>${safeStrength.toFixed(2)}</output></span>
+                    <input class="cmgr-lora-strength-slider" style="--cmgr-strength-percent:${strengthPercent}%" type="range" min="-4" max="4" step="0.05" value="${escapeAttr(safeStrength)}" data-applied-strength="${index}" />
+                    <span class="cmgr-lora-strength-scale" aria-hidden="true"><i>-4</i><i>0</i><i>+4</i></span>
                 </label>
-            </div>
-            <div class="cmgr-lora-order-actions">
-                <button class="cmgr-secondary" data-action="move-applied-up" data-index="${index}" ${index === 0 ? "disabled" : ""} title="${escapeAttr(t("Move Up"))}">↑</button>
-                <button class="cmgr-secondary" data-action="move-applied-down" data-index="${index}" ${index === normalizeLoraList(popup.node?._cmgrLoras).length - 1 ? "disabled" : ""} title="${escapeAttr(t("Move Down"))}">↓</button>
-                <button class="cmgr-danger" data-action="remove-applied" data-index="${index}">${escapeHtml(t("Remove"))}</button>
             </div>
         </article>
     `;
 }
 
+function renderAppliedDetail(entry, index, total) {
+    const local = popup.libraryItems.find((asset) => loraKey(entryFromAsset(asset)) === loraKey(entry)) || null;
+    const displayName = entry.display_name || shortLoraName(entry, 80);
+    const previewUrl = entry.preview_url || local?.thumb_url || "";
+    const baseModel = entry.base_model || local?.base_model || "—";
+    const words = normalizedTriggerWords(entry).length
+        ? normalizedTriggerWords(entry)
+        : normalizedTriggerWords(local || {});
+    const civitaiUrl = entry.civitai_url || local?.civitai_url || "";
+    return `
+        <div class="cmgr-detail-scroll">
+            <div class="cmgr-detail-preview cmgr-lora-detail-preview" data-preview-key="${escapeAttr(previewUrl)}">${renderDetailPreviewMedia(previewUrl, displayName)}</div>
+            <div class="cmgr-detail-head cmgr-lora-applied-detail-head"><div>
+                ${civitaiUrl
+                    ? `<a class="cmgr-detail-title-link" href="${escapeAttr(civitaiUrl)}" target="_blank" rel="noopener noreferrer"><h2>${escapeHtml(displayName)}</h2><span class="cmgr-external-icon" aria-hidden="true">↗</span></a>`
+                    : `<h2>${escapeHtml(displayName)}</h2>`}
+                <p>${escapeHtml(t("Applied LoRA"))} · ${escapeHtml(baseModel)}</p>
+            </div></div>
+            <div class="cmgr-lora-applied-detail-status ${entry.enabled ? "is-enabled" : "is-disabled"}">
+                <span aria-hidden="true"></span>
+                <div><b>${escapeHtml(t(entry.enabled ? "Enabled" : "Disabled"))}</b><small>${escapeHtml(t("Execution position {current} of {total}", { current: index + 1, total }))}</small></div>
+            </div>
+            <div class="cmgr-info-list cmgr-lora-file-info cmgr-lora-applied-info">
+                <div><span>${escapeHtml(t("File"))}</span><b>${escapeHtml(entry.name || "—")}</b></div>
+                <div><span>${escapeHtml(t("Base Model"))}</span><b>${escapeHtml(baseModel)}</b></div>
+                <div><span>${escapeHtml(t("Model Strength"))}</span><b>${Number(entry.strength_model || 0).toFixed(2)}</b></div>
+                <div><span>${escapeHtml(t("Execution order"))}</span><b>${index + 1} / ${total}</b></div>
+                ${local?.relative_path ? `<div><span>${escapeHtml(t("Relative Path"))}</span><b>${escapeHtml(local.relative_path)}</b></div>` : ""}
+                ${local?.size ? `<div><span>${escapeHtml(t("Size"))}</span><b>${escapeHtml(formatBytes(local.size))}</b></div>` : ""}
+            </div>
+            <div class="cmgr-section-title">${escapeHtml(t("Trigger Words"))}</div>
+            <div class="cmgr-trained">${words.length ? words.slice(0, 16).map((word) => `<button data-copy="${escapeAttr(word)}">${escapeHtml(word)}</button>`).join("") : `<span>${escapeHtml(t("No trained words cached."))}</span>`}</div>
+            <section class="cmgr-lora-applied-detail-actions" aria-label="${escapeAttr(t("Order and actions"))}">
+                <div class="cmgr-section-title">${escapeHtml(t("Order and actions"))}</div>
+                <div class="cmgr-lora-applied-detail-reorder">
+                    <button class="cmgr-secondary" data-action="move-applied-up" data-index="${index}" ${index === 0 ? "disabled" : ""}><span aria-hidden="true">↑</span>${escapeHtml(t("Move Up"))}</button>
+                    <button class="cmgr-secondary" data-action="move-applied-down" data-index="${index}" ${index === total - 1 ? "disabled" : ""}><span aria-hidden="true">↓</span>${escapeHtml(t("Move Down"))}</button>
+                </div>
+                <button class="cmgr-danger cmgr-full cmgr-lora-applied-detail-remove" data-action="remove-applied" data-index="${index}"><span aria-hidden="true">×</span>${escapeHtml(t("Remove from node"))}</button>
+            </section>
+        </div>
+    `;
+}
+
 function renderDownloads() {
     const jobs = loraDownloads();
+    const activeCount = jobs.filter((job) => ACTIVE_DOWNLOAD_STATUSES.has(job.status)).length;
+    const finishedJobs = jobs.filter((job) => TERMINAL_DOWNLOAD_STATUSES.has(job.status));
     return `
         <section class="cmgr-page cmgr-lora-page">
-            <div class="cmgr-toolbar cmgr-lora-toolbar">
-                <h2>${escapeHtml(t("LoRA Downloads"))}</h2>
-                <button class="cmgr-secondary" data-action="refresh-lora-downloads">${escapeHtml(t("Refresh"))}</button>
+            <div class="cmgr-toolbar cmgr-lora-toolbar cmgr-download-toolbar cmgr-lora-download-toolbar">
+                <div class="cmgr-download-toolbar-heading">
+                    <h2>${escapeHtml(t("LoRA Downloads"))}</h2>
+                    <span>${escapeHtml(t("{active} active · {finished} finished", { active: activeCount, finished: finishedJobs.length }))}</span>
+                </div>
+                <div class="cmgr-download-toolbar-actions">
+                    ${finishedJobs.length ? `<button class="cmgr-secondary" data-action="clear-lora-downloads">${escapeHtml(t("Clear finished"))}</button>` : ""}
+                    <button class="cmgr-secondary" data-action="refresh-lora-downloads">${escapeHtml(t("Refresh"))}</button>
+                </div>
             </div>
             <div class="cmgr-lora-download-list">
-                ${jobs.length ? jobs.map(renderDownloadJob).join("") : `<div class="cmgr-empty">${escapeHtml(t("No LoRA downloads yet."))}</div>`}
+                ${jobs.length ? jobs.map(renderDownloadJob).join("") : renderCollectionEmptyState({
+                    kind: "downloads",
+                    kicker: t("Downloads"),
+                    title: t("No download tasks yet"),
+                    description: t("Downloads you queue from Discover will appear here with their progress and status."),
+                    hints: [t("Live progress"), t("Retry failed tasks")],
+                })}
             </div>
         </section>
     `;
@@ -2419,16 +2606,26 @@ function renderPendingDownload(job) {
 }
 
 function renderDownloadJob(job) {
+    const pct = downloadPercent(job);
+    const active = ACTIVE_DOWNLOAD_STATUSES.has(job.status);
+    const path = String(job.relative_path || job.target_path || "");
     return `
-        <article class="cmgr-lora-download-item">
-            <div class="cmgr-lora-download-head"><b>${escapeHtml(job.filename || job.relative_path || "LoRA")}</b><span>${escapeHtml(t(downloadStatusLabel(job.status)))}</span></div>
-            <div class="cmgr-progress"><div style="width:${downloadPercent(job)}%"></div><span>${downloadPercent(job)}%</span></div>
-            <div class="cmgr-lora-download-foot">
-                <span>${formatBytes(job.progress)}${job.total ? ` / ${formatBytes(job.total)}` : ""}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</span>
-                <div>
-                    ${ACTIVE_DOWNLOAD_STATUSES.has(job.status) ? `<button class="cmgr-secondary" data-action="cancel-lora-download" data-task-id="${escapeAttr(job.id)}">${escapeHtml(t("Cancel"))}</button>` : ""}
-                    ${["failed", "cancelled"].includes(job.status) ? `<button class="cmgr-primary" data-action="retry-lora-download" data-task-id="${escapeAttr(job.id)}">${escapeHtml(t("Retry Download"))}</button>` : ""}
+        <article class="cmgr-download cmgr-lora-download-item is-${escapeAttr(job.status || "pending")}">
+            <div class="cmgr-download-head">
+                <div class="cmgr-download-title">
+                    <span class="cmgr-download-kind">LoRA</span>
+                    <strong title="${escapeAttr(job.filename || job.relative_path || "LoRA")}">${escapeHtml(job.filename || job.relative_path || "LoRA")}</strong>
                 </div>
+                <b class="cmgr-download-status ${escapeAttr(job.status || "pending")}"><i aria-hidden="true"></i>${escapeHtml(t(downloadStatusLabel(job.status)))}</b>
+            </div>
+            ${path ? `<div class="cmgr-download-path" title="${escapeAttr(job.target_path || path)}">${escapeHtml(path)}</div>` : ""}
+            <div class="cmgr-progress${Number(job.total || 0) > 0 ? "" : active ? " indeterminate" : ""}"><div style="width:${pct}%"></div></div>
+            <div class="cmgr-download-meta"><strong>${Number(job.total || 0) > 0 ? `${pct}%` : active ? escapeHtml(t("Waiting for size...")) : `${pct}%`}</strong><span>${formatBytes(job.progress)}${job.total ? ` / ${formatBytes(job.total)}` : ""}</span></div>
+            ${job.error ? `<div class="cmgr-warning">${escapeHtml(job.error)}</div>` : ""}
+            <div class="cmgr-download-actions">
+                ${active ? `<button class="cmgr-secondary" data-action="cancel-lora-download" data-task-id="${escapeAttr(job.id)}">${escapeHtml(t("Cancel"))}</button>` : ""}
+                ${["failed", "cancelled"].includes(job.status) ? `<button class="cmgr-primary" data-action="retry-lora-download" data-task-id="${escapeAttr(job.id)}">${escapeHtml(t("Retry Download"))}</button>` : ""}
+                ${active ? "" : `<button class="cmgr-download-remove" data-action="remove-lora-download" data-task-id="${escapeAttr(job.id)}" title="${escapeAttr(t("Remove record"))}" aria-label="${escapeAttr(t("Remove record"))}"><span aria-hidden="true"></span></button>`}
             </div>
         </article>
     `;
@@ -2532,6 +2729,35 @@ async function retryDownload(taskId) {
             popup.pendingApply.delete(taskId);
             popup.pendingApply.set(data.task_id, pending);
         }
+        await loadDownloads(true);
+    } catch (error) {
+        popup.error = error.message;
+        renderPopup();
+    }
+}
+
+async function removeDownloadRecord(taskId) {
+    try {
+        await apiPost("/download/remove", { task_id: taskId });
+        popup.pendingApply.delete(taskId);
+        showToast(t("Download record removed."));
+        await loadDownloads(true);
+    } catch (error) {
+        popup.error = error.message;
+        renderPopup();
+    }
+}
+
+async function clearFinishedDownloadRecords() {
+    const taskIds = loraDownloads()
+        .filter((job) => TERMINAL_DOWNLOAD_STATUSES.has(job.status))
+        .map((job) => String(job.id || ""))
+        .filter(Boolean);
+    if (!taskIds.length || !confirm(t("Clear all finished LoRA download records?"))) return;
+    try {
+        const data = await apiPost("/download/remove", { task_ids: taskIds });
+        taskIds.forEach((taskId) => popup.pendingApply.delete(taskId));
+        showToast(t("{count} download records cleared.", { count: Number(data.removed || 0) }));
         await loadDownloads(true);
     } catch (error) {
         popup.error = error.message;
@@ -2694,6 +2920,22 @@ function bindPopupEvents() {
         localFavoriteFolder.onchange = () => void assignFavoriteFolder(localFavorite(asset), localFavoriteFolder.value);
     }
 
+    popupBody?.querySelectorAll(".cmgr-lora-applied-item[data-applied-index]").forEach((card) => {
+        const select = (event) => {
+            if (event?.target?.closest?.("button, input, label, a")) return;
+            const index = Number(card.dataset.appliedIndex);
+            if (!Number.isInteger(index) || index === popup.selectedAppliedIndex) return;
+            popup.selectedAppliedIndex = index;
+            renderPopup();
+        };
+        card.onclick = select;
+        card.onkeydown = (event) => {
+            if (!["Enter", " "].includes(event.key)) return;
+            event.preventDefault();
+            select(event);
+        };
+    });
+
     popupBody?.querySelectorAll("[data-applied-enabled]").forEach((input) => {
         input.onchange = () => {
             const index = Number(input.dataset.appliedEnabled);
@@ -2712,10 +2954,14 @@ function bindPopupEvents() {
             if (!next[index]) return;
             next[index].strength_model = Number(input.value);
             writeNodeData(popup.node, next);
-            const output = input.parentElement?.querySelector("output");
+            input.style.setProperty("--cmgr-strength-percent", `${((Number(input.value) + 4) / 8) * 100}%`);
+            const output = input.closest(".cmgr-lora-strength")?.querySelector("output");
             if (output) output.value = Number(input.value).toFixed(2);
         };
-        input.onchange = () => syncNodeWidgets(popup.node, popup.node?._cmgrLoras || []);
+        input.onchange = () => {
+            syncNodeWidgets(popup.node, popup.node?._cmgrLoras || []);
+            if (popup.tab === "applied") renderPopup();
+        };
     });
     popupBody?.querySelectorAll('[data-action="move-applied-up"]').forEach((button) => { button.onclick = () => updateLoraOrder(Number(button.dataset.index), -1); });
     popupBody?.querySelectorAll('[data-action="move-applied-down"]').forEach((button) => { button.onclick = () => updateLoraOrder(Number(button.dataset.index), 1); });
@@ -2723,6 +2969,7 @@ function bindPopupEvents() {
     const clearApplied = popupBody?.querySelector('[data-action="clear-applied"]');
     if (clearApplied) clearApplied.onclick = () => {
         if (!confirm(t("Remove all LoRAs from this node?"))) return;
+        popup.selectedAppliedIndex = 0;
         writeNodeData(popup.node, []);
         syncNodeWidgets(popup.node, []);
         renderPopup();
@@ -2730,8 +2977,11 @@ function bindPopupEvents() {
 
     const refreshDownloads = popupBody?.querySelector('[data-action="refresh-lora-downloads"]');
     if (refreshDownloads) refreshDownloads.onclick = () => void loadDownloads(true);
+    const clearDownloads = popupBody?.querySelector('[data-action="clear-lora-downloads"]');
+    if (clearDownloads) clearDownloads.onclick = () => void clearFinishedDownloadRecords();
     popupBody?.querySelectorAll('[data-action="cancel-lora-download"]').forEach((button) => { button.onclick = () => void cancelDownload(button.dataset.taskId); });
     popupBody?.querySelectorAll('[data-action="retry-lora-download"]').forEach((button) => { button.onclick = () => void retryDownload(button.dataset.taskId); });
+    popupBody?.querySelectorAll('[data-action="remove-lora-download"]').forEach((button) => { button.onclick = () => void removeDownloadRecord(button.dataset.taskId); });
 }
 
 function showToast(message) {
