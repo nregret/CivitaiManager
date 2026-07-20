@@ -14,5 +14,5 @@ Repository = "https://github.com/nregret/CivitaiManager"
 "Bug Tracker" = "https://github.com/nregret/CivitaiManager/issues"
 
 [tool.comfy]
-PublisherId = "yunlong"
+PublisherId = "nnegret"
 DisplayName = "CivitaiManager"
