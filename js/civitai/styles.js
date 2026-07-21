@@ -5191,6 +5191,25 @@ export function injectStyles() {
                 border-left: 0;
             }
         }
+
+        /* Keep the popup geometry isolated from ComfyUI themes and other
+           extensions that change flex cross-axis sizing on generic shells. */
+        .cmgr-overlay .cmgr-shell {
+            align-items: stretch;
+        }
+        .cmgr-overlay .cmgr-layout {
+            width: 100%;
+            align-self: stretch;
+            box-sizing: border-box;
+        }
+        .cmgr-overlay .cmgr-body,
+        .cmgr-overlay .cmgr-page,
+        .cmgr-overlay .cmgr-toolbar,
+        .cmgr-overlay .cmgr-split {
+            width: 100%;
+            max-width: none;
+            box-sizing: border-box;
+        }
     `;
     if (!style.isConnected) {
         document.head.appendChild(style);
