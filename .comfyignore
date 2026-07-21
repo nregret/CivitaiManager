@@ -1,6 +1,7 @@
 # Development-only files that should not be included in Registry archives.
 .github/
 tests/
+img/
 .agents/
 .codex/
 .test-user/
